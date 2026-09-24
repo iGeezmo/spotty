@@ -35,19 +35,61 @@ void main() {
   runApp(const HuasifeiApp());
 }
 
+/// Мок-режим для скриншотов B2 (390×844): не трогает сеть/хранилище, сразу
+/// показывает MainShell с MockRouterClient. Никогда не включён в релиз —
+/// tool/release.sh не передаёт этот define, значение по умолчанию false.
+const kScreenshotMock = bool.fromEnvironment('SCREENSHOT_MOCK');
+
+// ---------------------------------------------------------------------------
+// Бренд Spotty by 0dai — своя палитра (индиго + бирюзовый акцент «пятно»),
+// светлая и тёмная тема, следует системной настройке.
+// ---------------------------------------------------------------------------
+const _brandSeed = Color(0xFF5B6EF5);
+
+final _darkScheme = ColorScheme.fromSeed(
+  seedColor: _brandSeed,
+  brightness: Brightness.dark,
+).copyWith(
+  tertiary: const Color(0xFF00D9B4),
+  secondary: const Color(0xFFFF8A3D),
+);
+
+final _lightScheme = ColorScheme.fromSeed(
+  seedColor: _brandSeed,
+  brightness: Brightness.light,
+).copyWith(
+  tertiary: const Color(0xFF00877A),
+  secondary: const Color(0xFFC9601A),
+);
+
+ThemeData _spottyTheme(Brightness brightness) => ThemeData(
+      useMaterial3: true,
+      brightness: brightness,
+      colorScheme: brightness == Brightness.dark ? _darkScheme : _lightScheme,
+      scaffoldBackgroundColor: brightness == Brightness.dark
+          ? const Color(0xFF0E1016)
+          : const Color(0xFFF4F5FA),
+      cardTheme: const CardThemeData(
+        elevation: 0,
+        margin: EdgeInsets.zero,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(20))),
+      ),
+      dividerColor:
+          brightness == Brightness.dark ? Colors.white12 : Colors.black12,
+    );
+
 class HuasifeiApp extends StatelessWidget {
   const HuasifeiApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Huasifei Remote',
+      title: 'Spotty by 0dai',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorSchemeSeed: const Color(0xFF2E7D32),
-        useMaterial3: true,
-        brightness: Brightness.dark,
-      ),
+      theme: _spottyTheme(Brightness.light),
+      darkTheme: _spottyTheme(Brightness.dark),
+      themeMode: ThemeMode.system,
       home: const RootGate(),
     );
   }
@@ -102,6 +144,13 @@ class _RootGateState extends State<RootGate> {
   }
 
   Future<void> _load() async {
+    if (kScreenshotMock) {
+      setState(() {
+        _creds = {'host': '192.168.5.1', 'user': 'app', 'pass': 'mock'};
+        _loading = false;
+      });
+      return;
+    }
     final c = await Credentials.load();
     setState(() {
       _creds = c;
@@ -270,16 +319,103 @@ class RouterClient {
   final String host;
   final String user;
   final String pass;
+  final bool mock;
   String? _session;
 
-  RouterClient({required this.host, required this.user, required this.pass});
+  RouterClient(
+      {required this.host,
+      required this.user,
+      required this.pass,
+      this.mock = false});
 
   Uri get _endpoint => Uri.parse('http://$host/ubus');
 
   static const _anonymousSid = '00000000000000000000000000000000';
 
+  /// Мок-данные для скриншотов (kScreenshotMock) — никогда не используется
+  /// вне мок-режима, никогда не идёт в сеть.
+  Map<String, dynamic> _mockRpc(String object, String method, Map<String, dynamic> params) {
+    if (object == 'session' && method == 'login') {
+      return {'ubus_rpc_session': 'mockmockmockmockmockmockmockmock'};
+    }
+    if (object == 'opscx' && method == 'status') {
+      return {
+        'cellular': {'up': true, 'uptime': 345600, 'device': 'eth2', 'modem': 'FM350', 'rx_bytes': 0, 'tx_bytes': 0},
+        'tunnel': {
+          'ready': true,
+          'external_address': '178.62.14.9',
+          'updated_at': DateTime.now().millisecondsSinceEpoch ~/ 1000 - 18,
+          'valid_until': DateTime.now().millisecondsSinceEpoch ~/ 1000 + 22,
+        },
+        'wifi': {'ssid': 'HUASIFEI-5G', 'clients': 4},
+        'system': {'board': 'Huasifei WH3000 Pro', 'release': '25.12.5'},
+      };
+    }
+    if (object == 'opscx' && method == 'diag_status') {
+      return {
+        'ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        'verdict': {'state': 'warn', 'text': 'Сеть работает, но слой DNS отвечает медленно'},
+        'layers': [
+          {'id': 1, 'name': 'Сотовый модем', 'state': 'ok', 'reason': 'Подключён'},
+          {'id': 2, 'name': 'IP по сотовой сети', 'state': 'ok', 'reason': 'Адрес получен'},
+          {'id': 3, 'name': 'DNS', 'state': 'warn', 'reason': 'Ответ за 640 мс'},
+          {'id': 4, 'name': 'VPN-туннель', 'state': 'ok', 'reason': 'Установлен'},
+          {'id': 5, 'name': 'Маршрут через VPN', 'state': 'ok', 'reason': 'Весь трафик через туннель'},
+          {'id': 6, 'name': 'Проверка вовне', 'state': 'ok', 'reason': 'Отвечает'},
+          {'id': 7, 'name': 'Проверка закрытых сайтов', 'state': 'unknown', 'reason': 'нет данных'},
+        ],
+      };
+    }
+    if (object == 'opscx' && method == 'list_nodes') {
+      return {
+        'selected': 'de23',
+        'current': 'de23',
+        'nodes': [
+          {'id': 'de23', 'meta': {'name': '🇩🇪 Anti-Block LTE #1', 'host': 'de23.example'}, 'probe_ok': 10, 'of': 10, 'median_ms': 74, 'egress': '178.62.14.9', 'loc': 'DE'},
+          {'id': 'nl03', 'meta': {'name': '🇳🇱 Anti-Block LTE #3', 'host': 'nl03.example'}, 'probe_ok': 10, 'of': 10, 'median_ms': 61, 'egress': '178.62.10.2', 'loc': 'NL'},
+          {'id': 'fi07', 'meta': {'name': '🇫🇮 Anti-Block LTE #7', 'host': 'fi07.example'}, 'probe_ok': 9, 'of': 10, 'median_ms': 88, 'egress': '81.4.5.6', 'loc': 'FI'},
+        ],
+      };
+    }
+    if (object == 'opscx' && method == 'get_status') {
+      return {
+        'interval_min': 30,
+        'selected': 'de23',
+        'manifest': {'node': 'de23'},
+        'subs': [
+          {'label': 'sub', 'url_sha12': 'abc123', 'last_ok': DateTime.now().millisecondsSinceEpoch ~/ 1000, 'priority': 5, 'result': 'ok'},
+        ],
+      };
+    }
+    if (object == 'opscx' && method == 'modem_request') {
+      return {'accepted': true, 'id': 'mock-id-${params['diagnostic']}', 'diagnostic': params['diagnostic'], 'error': null};
+    }
+    if (object == 'opscx' && method == 'modem_result') {
+      final id = params['id'] as String? ?? '';
+      if (id.contains('signal')) {
+        return {'state': 'complete', 'id': id, 'result': {'command': 'signal', 'status': 'ok', 'data': {'rssi_code': 17, 'ber_code': 1}}, 'error': null};
+      }
+      if (id.contains('operator')) {
+        return {'state': 'complete', 'id': id, 'result': {'command': 'operator', 'status': 'ok', 'data': {'plmn': '41501', 'rat': 'LTE'}}, 'error': null};
+      }
+      return {'state': 'unavailable', 'id': id, 'result': null, 'error': 'mock'};
+    }
+    if (object == 'opscx' && method == 'metrics_history') {
+      throw RouterForbiddenError('mock: metrics_history not implemented');
+    }
+    if (object == 'system' && method == 'reboot') return {};
+    if (object == 'opscx' && (method == 'action' || method == 'select_node' || method == 'refresh_now' || method == 'set_subscription' || method == 'set_interval')) {
+      return {};
+    }
+    return {};
+  }
+
   Future<Map<String, dynamic>> _rpc(
       String sid, String object, String method, Map<String, dynamic> params) async {
+    if (mock) {
+      await Future.delayed(const Duration(milliseconds: 30));
+      return _mockRpc(object, method, params);
+    }
     final body = jsonEncode({
       'jsonrpc': '2.0',
       'id': 1,
@@ -406,6 +542,82 @@ class RouterClient {
     return _withSession(
         (sid) => _rpc(sid, 'opscx', 'set_interval', {'minutes': minutes}));
   }
+
+  // -- Сотовая диагностика (opscx-modem-command, асинхронный запрос/результат) --
+  // Контракт: modem_request({diagnostic: "signal"|"registration"|"operator"})
+  // -> {accepted, id}; затем поллинг modem_result({id}) до state != "pending".
+  // "signal" даёт только CSQ (rssi_code 0-31|99, ber_code 0-7|99) — детального
+  // RSRP/RSRQ/SINR в API нет, дБм оцениваются по стандартной формуле CSQ.
+
+  Future<Map<String, dynamic>?> _modemDiagnostic(String diagnostic) async {
+    try {
+      final req = await _withSession(
+          (sid) => _rpc(sid, 'opscx', 'modem_request', {'diagnostic': diagnostic}));
+      final id = req['id'] as String?;
+      if (req['accepted'] != true || id == null) return null;
+      for (var i = 0; i < 8; i++) {
+        await Future.delayed(const Duration(milliseconds: 400));
+        final res = await _withSession(
+            (sid) => _rpc(sid, 'opscx', 'modem_result', {'id': id}));
+        final state = res['state'] as String?;
+        if (state == 'complete') {
+          final result = res['result'] as Map<String, dynamic>?;
+          if (result != null && result['status'] == 'ok') {
+            return result['data'] as Map<String, dynamic>?;
+          }
+          return null;
+        }
+        if (state == 'unavailable') return null;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// {rssi_code, ber_code} — CSQ, или null если модем/API недоступны.
+  Future<Map<String, dynamic>?> fetchSignal() => _modemDiagnostic('signal');
+
+  /// {plmn, rat} — или null если недоступно.
+  Future<Map<String, dynamic>?> fetchOperator() => _modemDiagnostic('operator');
+
+  /// Пока нет на роутере (добавляется отдельно) — тихо возвращает null,
+  /// НИКОГДА не подставляет выдуманные точки истории.
+  Future<Map<String, dynamic>?> metricsHistory() async {
+    try {
+      return await _withSession((sid) => _rpc(sid, 'opscx', 'metrics_history', {}));
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CSQ (сотовый сигнал) — единственный реально доступный на этом модеме формат:
+// AT+CSQ даёт rssi_code 0..31 (99 = неизвестно) и ber_code 0..7 (99 = неизвестно).
+// dBm — стандартная 3GPP-оценка по коду, не отдельное измерение RSRP.
+// ---------------------------------------------------------------------------
+int? csqToDbm(int? code) {
+  if (code == null || code < 0 || code > 31) return null;
+  return -113 + 2 * code;
+}
+
+const _berBuckets = [
+  '<0.2%', '0.2–0.4%', '0.4–0.8%', '0.8–1.6%',
+  '1.6–3.2%', '3.2–6.4%', '6.4–12.8%', '>12.8%',
+];
+
+String berQualityText(int? code) {
+  if (code == null || code < 0 || code > 7) return 'нет данных';
+  return _berBuckets[code];
+}
+
+String signalBucketLabel(int? dbm) {
+  if (dbm == null) return 'нет данных';
+  if (dbm >= -80) return 'Хорошо';
+  if (dbm >= -95) return 'Средне';
+  if (dbm >= -105) return 'Слабо';
+  return 'Плохо';
 }
 
 // ---------------------------------------------------------------------------
@@ -632,8 +844,8 @@ class _MainShellState extends State<MainShell> {
   @override
   void initState() {
     super.initState();
-    _client =
-        RouterClient(host: widget.host, user: widget.user, pass: widget.pass);
+    _client = RouterClient(
+        host: widget.host, user: widget.user, pass: widget.pass, mock: kScreenshotMock);
     _checkUpdate();
     _updateTimer =
         Timer.periodic(const Duration(hours: 6), (_) => _checkUpdate());
@@ -655,42 +867,104 @@ class _MainShellState extends State<MainShell> {
     setState(() => _update = info);
   }
 
+  void _openSettings() {
+    Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => SettingsTab(update: _update, onRecheck: _checkUpdate)));
+  }
+
+  void _goTab(int i) => setState(() => _tab = i);
+
   @override
   Widget build(BuildContext context) {
     final pages = [
-      HomeTab(client: _client, host: widget.host, onLogout: widget.onLogout),
-      NetworkTab(client: _client),
-      NodesTab(client: _client),
-      SubscriptionsTab(client: _client),
-      SettingsTab(update: _update, onRecheck: _checkUpdate),
+      HomeTab(
+          client: _client,
+          host: widget.host,
+          onLogout: widget.onLogout,
+          onOpenSettings: _openSettings,
+          onGoTab: _goTab,
+          update: _update),
+      ToolsTab(client: _client, onGoTab: _goTab, onOpenSettings: _openSettings, onLogout: widget.onLogout),
+      VpnTab(client: _client, onOpenSettings: _openSettings, onLogout: widget.onLogout),
+      CellularTab(client: _client, onOpenSettings: _openSettings, onLogout: widget.onLogout),
     ];
     return Scaffold(
-      body: Column(
-        children: [
-          if (_update != null)
-            _UpdateBanner(
-              update: _update!,
-              onTap: () => setState(() => _tab = 4),
-            ),
-          Expanded(child: IndexedStack(index: _tab, children: pages)),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.home), label: 'Главная'),
-          NavigationDestination(
-              icon: Icon(Icons.network_check), label: 'Сеть'),
-          NavigationDestination(icon: Icon(Icons.hub), label: 'Узлы'),
-          NavigationDestination(
-              icon: Icon(Icons.subscriptions), label: 'Подписки'),
-          NavigationDestination(
-              icon: Icon(Icons.settings), label: 'Настройки'),
-        ],
+      extendBody: true,
+      body: SafeArea(bottom: false, child: IndexedStack(index: _tab, children: pages)),
+      bottomNavigationBar: _pillTabBar(context),
+    );
+  }
+
+  Widget _pillTabBar(BuildContext context) {
+    final items = [
+      (Icons.dashboard_rounded, 'Главная'),
+      (Icons.build_circle_rounded, 'Инструменты'),
+      (Icons.shield_rounded, 'VPN'),
+      (Icons.signal_cellular_alt_rounded, 'Сотовая'),
+    ];
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+      child: Container(
+        height: 62,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF171A24) : Colors.white,
+          borderRadius: BorderRadius.circular(31),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.28), blurRadius: 20, offset: const Offset(0, 8))],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            for (var i = 0; i < items.length; i++)
+              InkWell(
+                onTap: () => _goTab(i),
+                customBorder: const StadiumBorder(),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: _tab == i ? cs.primary.withOpacity(0.18) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Icon(items[i].$1,
+                      size: 20,
+                      color: _tab == i ? cs.primary : Theme.of(context).colorScheme.onSurface.withOpacity(0.35)),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
+}
+
+/// Общая шапка B2: бренд + шестерёнка (Настройки, с меткой обновления) +
+/// человек (выйти/сменить роутер).
+Widget spottyHeader(BuildContext context,
+    {required VoidCallback onOpenSettings, required VoidCallback onLogout, bool hasUpdate = false}) {
+  return Padding(
+    padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+    child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      spottyBrand(big: true),
+      Row(children: [
+        Stack(clipBehavior: Clip.none, children: [
+          roundHeaderIcon(context, Icons.tune_rounded, onTap: onOpenSettings),
+          if (hasUpdate)
+            Positioned(
+              right: -1,
+              top: -1,
+              child: Container(
+                width: 10,
+                height: 10,
+                decoration: const BoxDecoration(color: Color(0xFF00D9B4), shape: BoxShape.circle),
+              ),
+            ),
+        ]),
+        const SizedBox(width: 8),
+        roundHeaderIcon(context, Icons.person_outline_rounded, onTap: onLogout),
+      ]),
+    ]),
+  );
 }
 
 class _UpdateBanner extends StatelessWidget {
@@ -935,12 +1209,34 @@ abstract class _TabState<T extends StatefulWidget> extends State<T> {
 // Главная: крупно VPN/напрямую, узел, выход, вердикт диагностики.
 // ---------------------------------------------------------------------------
 
+/// Модули «Инструментов» — id связан с реальными экранами ниже; api=false
+/// модули показываются приглушённо с пометкой «скоро» (нет метода на роутере).
+const _moduleDefs = [
+  {'id': 'internet', 'name': 'Интернет и VPN', 'icon': Icons.public_rounded, 'api': true},
+  {'id': 'diag', 'name': 'Диагностика', 'icon': Icons.troubleshoot_rounded, 'api': true},
+  {'id': 'cellular', 'name': 'Сотовая сеть', 'icon': Icons.signal_cellular_alt_rounded, 'api': true},
+  {'id': 'devices', 'name': 'Устройства', 'icon': Icons.devices_rounded, 'api': false},
+  {'id': 'wifi', 'name': 'Wi-Fi', 'icon': Icons.wifi_rounded, 'api': true},
+  {'id': 'maint', 'name': 'Обслуживание', 'icon': Icons.build_circle_rounded, 'api': true},
+  {'id': 'log', 'name': 'Журнал событий', 'icon': Icons.history_rounded, 'api': false},
+];
+
 class HomeTab extends StatefulWidget {
   final RouterClient client;
   final String host;
   final VoidCallback onLogout;
-  const HomeTab(
-      {super.key, required this.client, required this.host, required this.onLogout});
+  final VoidCallback onOpenSettings;
+  final void Function(int) onGoTab;
+  final UpdateInfo? update;
+  const HomeTab({
+    super.key,
+    required this.client,
+    required this.host,
+    required this.onLogout,
+    required this.onOpenSettings,
+    required this.onGoTab,
+    required this.update,
+  });
 
   @override
   State<HomeTab> createState() => _HomeTabState();
@@ -951,12 +1247,16 @@ class _HomeTabState extends _TabState<HomeTab> {
   Map<String, dynamic>? _status;
   Map<String, dynamic>? _diag;
   Map<String, dynamic>? _nodes;
+  Map<String, dynamic>? _subs;
+  int? _rssiCode;
+  bool _signalLoading = false;
 
   @override
   void initState() {
     super.initState();
     _refresh();
-    _timer = Timer.periodic(const Duration(seconds: 10), (_) => _refresh());
+    _loadSignal();
+    _timer = Timer.periodic(const Duration(seconds: 15), (_) => _refresh());
   }
 
   @override
@@ -965,22 +1265,36 @@ class _HomeTabState extends _TabState<HomeTab> {
     super.dispose();
   }
 
+  Future<void> _loadSignal() async {
+    if (_signalLoading) return;
+    _signalLoading = true;
+    final data = await widget.client.fetchSignal();
+    _signalLoading = false;
+    if (!mounted) return;
+    setState(() => _rssiCode = data?['rssi_code'] as int?);
+  }
+
   Future<void> _refresh() async {
     try {
       final s = await widget.client.status();
       Map<String, dynamic>? d;
       Map<String, dynamic>? n;
+      Map<String, dynamic>? subs;
       try {
         d = await widget.client.diagStatus();
       } catch (_) {}
       try {
         n = await widget.client.listNodes();
       } catch (_) {}
+      try {
+        subs = await widget.client.vpnStatus();
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _status = s;
         _diag = d;
         _nodes = n;
+        _subs = subs;
         error = null;
       });
     } on RouterAuthError {
@@ -1002,7 +1316,8 @@ class _HomeTabState extends _TabState<HomeTab> {
   Widget build(BuildContext context) {
     final tunnel = _status?['tunnel'] as Map<String, dynamic>?;
     final vpnReady = tunnel?['ready'] == true;
-    final egress = tunnel?['external_address'] as String?;
+    final wifi = _status?['wifi'] as Map<String, dynamic>?;
+    final clients = wifi?['clients'] as int?;
     final nodes = (_nodes?['nodes'] as List?) ?? const [];
     final currentId = _nodes?['current'] as String?;
     Map<String, dynamic>? currentNode;
@@ -1010,129 +1325,693 @@ class _HomeTabState extends _TabState<HomeTab> {
       final m = n as Map<String, dynamic>;
       if (m['id'] == currentId) currentNode = m;
     }
-    final nodeName = currentNode == null
-        ? '—'
-        : cleanNodeName((currentNode['meta']
-                as Map<String, dynamic>?)?['name'] as String? ??
-            '');
-    final verdict = (_diag?['verdict'] as Map<String, dynamic>?);
-    final verdictState = verdict?['state'] as String?;
-    final verdictText = verdict?['text'] as String? ?? 'нет данных';
+    final loc = currentNode?['loc'] as String?;
+    final flag = flagFromLoc(loc);
+    final nodeShort = currentId ?? '—';
+    final medianMs = (currentNode?['median_ms'] as int?);
+    final verdict = _diag?['verdict'] as Map<String, dynamic>?;
+    final verdictState = verdict?['state'] as String? ?? 'unknown';
+    final verdictText = verdict?['text'] as String? ?? 'нет данных диагностики';
+    final subsList = ((_subs?['subs'] as List?) ?? const []).cast<Map<String, dynamic>>();
+    final aliveCount = subsList.where((s) => s['result'] == 'ok').length;
+    final dbm = csqToDbm(_rssiCode);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Huasifei WH3000 — ${widget.host}'),
-        actions: [
-          IconButton(
-              onPressed: widget.onLogout,
-              icon: const Icon(Icons.logout),
-              tooltip: 'Сменить роутер / пароль'),
-        ],
+    return StateGlow(
+      state: verdictState,
+      child: RefreshIndicator(
+        onRefresh: () => Future.wait([_refresh(), _loadSignal()]),
+        child: ListView(padding: const EdgeInsets.only(bottom: 110), children: [
+          spottyHeader(context,
+              onOpenSettings: widget.onOpenSettings,
+              onLogout: widget.onLogout,
+              hasUpdate: widget.update != null),
+          const SizedBox(height: 6),
+          if (widget.update != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: _UpdateBanner(update: widget.update!, onTap: widget.onOpenSettings),
+              ),
+            ),
+          errorBanner(),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Icon(vpnReady ? Icons.shield_rounded : Icons.shield_outlined,
+                    color: vpnReady ? const Color(0xFF00D9B4) : const Color(0xFFFFB84D), size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                      vpnReady ? 'VPN активен · $flag · $nodeShort' : 'Прямое подключение',
+                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 17)),
+                ),
+              ]),
+              const SizedBox(height: 6),
+              Text(verdictText,
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7), fontSize: 13)),
+            ]),
+          ),
+          const SizedBox(height: 18),
+          SizedBox(
+            height: 118,
+            child: ListView(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              scrollDirection: Axis.horizontal,
+              children: [
+                MetricPill(
+                    icon: Icons.podcasts_rounded,
+                    value: dbm?.toDouble(),
+                    unit: 'дБм · сигнал',
+                    series: null,
+                    color: const Color(0xFF00D9B4)),
+                MetricPill(
+                    icon: Icons.speed_rounded,
+                    value: medianMs?.toDouble(),
+                    unit: 'мс · узел',
+                    series: null,
+                    color: const Color(0xFF5B6EF5)),
+                MetricPill(
+                    icon: Icons.devices_rounded,
+                    value: clients?.toDouble(),
+                    unit: 'клиентов',
+                    series: null,
+                    color: Theme.of(context).colorScheme.tertiary),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                const CapsLabel(icon: Icons.podcasts_rounded, text: 'Сигнал'),
+                GestureDetector(
+                  onTap: () => widget.onGoTab(3),
+                  child: const Text('ПОДРОБНЕЕ ›',
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF00D9B4))),
+                ),
+              ]),
+              const SizedBox(height: 12),
+              Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                Text(dbm?.toString() ?? '—',
+                    style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 30)),
+                const SizedBox(width: 4),
+                if (dbm != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text('дБм',
+                        style: TextStyle(fontFamily: _mono, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5))),
+                  ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                      color: diagStateColor(dbm == null ? null : 'ok').withOpacity(0.16),
+                      borderRadius: BorderRadius.circular(8)),
+                  child: Text(signalBucketLabel(dbm),
+                      style: const TextStyle(color: Color(0xFF00D9B4), fontSize: 11, fontWeight: FontWeight.w700)),
+                ),
+              ]),
+              const SizedBox(height: 10),
+              ThresholdScale(
+                frac: dbm == null ? 0 : ((dbm + 113) / 53).clamp(0, 1),
+                stops: const [Color(0xFFFF5470), Color(0xFFFFB84D), Color(0xFF00D9B4), Color(0xFF00A8FF)],
+                label: dbm == null ? 'копим данные (CSQ)' : 'Оценка по RSSI (CSQ)',
+              ),
+            ])),
+          ),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(children: [
+              Expanded(
+                  child: spottyCard(context,
+                      child: _bigStat(context, (clients ?? 0).toString(), '', 'Устройства', 'в сети сейчас'))),
+              const SizedBox(width: 12),
+              Expanded(
+                  child: spottyCard(context,
+                      child: _bigStat(context, '$aliveCount/${subsList.length}', '', 'Подписка', 'живых узлов'))),
+            ]),
+          ),
+          const SizedBox(height: 16),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: OutlinedButton.icon(
+              onPressed: () => Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => SubscriptionsTab(client: widget.client))),
+              style: OutlinedButton.styleFrom(minimumSize: const Size(double.infinity, 46), shape: const StadiumBorder()),
+              icon: const Icon(Icons.tune_rounded, size: 18),
+              label: const Text('Настроить'),
+            ),
+          ),
+        ]),
       ),
-      body: RefreshIndicator(
-        onRefresh: _refresh,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            errorBanner(),
-            Card(
-              color: vpnReady ? Colors.green.shade900 : Colors.orange.shade900,
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(vpnReady ? Icons.lock : Icons.lock_open,
-                            size: 36, color: Colors.white),
-                        const SizedBox(width: 12),
-                        Text(
-                          vpnReady ? 'VPN' : 'Напрямую',
-                          style: const TextStyle(
-                              fontSize: 28,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white),
-                        ),
-                      ],
+    );
+  }
+
+  Widget _bigStat(BuildContext context, String value, String unit, String title, String sub) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(value, style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 26)),
+            if (unit.isNotEmpty)
+              Text(' $unit',
+                  style: TextStyle(fontFamily: _mono, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5))),
+          ]),
+          const SizedBox(height: 4),
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+          Text(sub, style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4), fontSize: 11)),
+        ],
+      );
+}
+
+// ---------------------------------------------------------------------------
+// Инструменты: список модулей, недоступные (нет метода на роутере) — тускло,
+// с пометкой «скоро».
+// ---------------------------------------------------------------------------
+
+class ToolsTab extends StatefulWidget {
+  final RouterClient client;
+  final void Function(int) onGoTab;
+  final VoidCallback onOpenSettings;
+  final VoidCallback onLogout;
+  const ToolsTab(
+      {super.key, required this.client, required this.onGoTab, required this.onOpenSettings, required this.onLogout});
+
+  @override
+  State<ToolsTab> createState() => _ToolsTabState();
+}
+
+class _ToolsTabState extends State<ToolsTab> {
+  Map<String, dynamic>? _status;
+  Map<String, dynamic>? _diag;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final s = await widget.client.status();
+      final d = await widget.client.diagStatus();
+      if (!mounted) return;
+      setState(() {
+        _status = s;
+        _diag = d;
+      });
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final wifi = _status?['wifi'] as Map<String, dynamic>?;
+    final sys = _status?['system'] as Map<String, dynamic>?;
+    final layers = (_diag?['layers'] as List?) ?? const [];
+    final okLayers = layers.where((l) => (l as Map)['state'] == 'ok').length;
+    final live = <String, String>{
+      'internet': (_status?['tunnel']?['ready'] == true) ? 'VPN' : 'Напрямую',
+      if (layers.isNotEmpty) 'diag': '$okLayers/${layers.length}',
+      if (wifi?['clients'] != null) 'wifi': '${wifi!['clients']} клиента',
+      if (sys?['release'] != null) 'maint': 'прошивка ${sys!['release']}',
+    };
+
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 24), children: [
+        spottyHeader(context, onOpenSettings: widget.onOpenSettings, onLogout: widget.onLogout),
+        const SizedBox(height: 16),
+        const Text('Инструменты', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 26)),
+        Text('обновлено только что',
+            style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.45), fontSize: 12)),
+        const SizedBox(height: 16),
+        for (final m in _moduleDefs)
+          Builder(builder: (context) {
+            final api = m['api'] as bool;
+            final val = live[m['id']];
+            final soon = !api;
+            return Opacity(
+              opacity: soon ? 0.45 : 1,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(18),
+                onTap: soon ? null : () => _openModule(context, m['id'] as String),
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF171A24) : Colors.white,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Row(children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.tertiary.withOpacity(0.16),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(m['icon'] as IconData, color: Theme.of(context).colorScheme.tertiary, size: 20),
                     ),
-                    const SizedBox(height: 12),
-                    Text('Узел: $nodeName',
-                        style: const TextStyle(color: Colors.white70)),
-                    Text('Выход: ${egress ?? 'нет данных'}',
-                        style: const TextStyle(color: Colors.white70)),
-                  ],
+                    const SizedBox(width: 14),
+                    Expanded(child: Text(m['name'] as String, style: const TextStyle(fontWeight: FontWeight.w700))),
+                    Text(val ?? (api ? 'открыть' : 'скоро'),
+                        style: TextStyle(
+                            fontFamily: val != null ? _mono : null,
+                            fontSize: 13,
+                            color: Theme.of(context).colorScheme.onSurface.withOpacity(val != null ? 0.6 : 0.4))),
+                    const SizedBox(width: 6),
+                    Icon(Icons.chevron_right_rounded, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.3)),
+                  ]),
                 ),
               ),
-            ),
-            const SizedBox(height: 12),
-            Card(
-              child: ListTile(
-                leading:
-                    Icon(diagStateIcon(verdictState), color: diagStateColor(verdictState)),
-                title: const Text('Диагностика сети'),
-                subtitle: Text(verdictText),
-              ),
-            ),
-            const SizedBox(height: 24),
-            const Text('Действия', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed: busy
-                  ? null
-                  : () => confirmAndRun(
-                        context,
-                        'Перезапустить VPN-туннель?',
-                        'Роутер попробует перезапустить VPN-туннель '
-                            '(restart_tunnel). На части прошивок этот шаг '
-                            'может ничего не менять — это ограничение самого '
-                            'роутера, не приложения.',
-                        () => widget.client.action('restart_tunnel'),
-                        onDone: _refresh,
-                      ),
-              icon: const Icon(Icons.vpn_key),
-              label: const Text('Перезапустить VPN-туннель'),
-            ),
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed: busy
-                  ? null
-                  : () => confirmAndRun(
-                        context,
-                        'Перезапустить модем/сотовую связь?',
-                        'Роутер отключит и заново поднимет сотовое '
-                            'соединение (reconnect_cellular). Интернет '
-                            'пропадёт на несколько секунд.',
-                        () => widget.client.action('reconnect_cellular'),
-                        onDone: _refresh,
-                      ),
-              icon: const Icon(Icons.settings_input_antenna),
-              label: const Text('Перезапустить модем'),
-            ),
-            const SizedBox(height: 8),
-            FilledButton.tonalIcon(
-              onPressed: busy
-                  ? null
-                  : () => confirmAndRun(
-                        context,
-                        'Перезагрузить роутер?',
-                        'Роутер полностью перезагрузится, Wi-Fi пропадёт на '
-                            '1-2 минуты.',
-                        () => widget.client.reboot(),
-                        onDone: _refresh,
-                      ),
-              icon: const Icon(Icons.power_settings_new),
-              label: const Text('Перезагрузить роутер'),
-              style: FilledButton.styleFrom(backgroundColor: Colors.red.shade900),
-            ),
-            if (busy)
-              const Padding(
-                padding: EdgeInsets.only(top: 16),
-                child: Center(child: CircularProgressIndicator()),
-              ),
-          ],
+            );
+          }),
+      ]),
+    );
+  }
+
+  void _openModule(BuildContext context, String id) {
+    switch (id) {
+      case 'internet':
+        widget.onGoTab(2);
+        break;
+      case 'diag':
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => NetworkTab(client: widget.client)));
+        break;
+      case 'cellular':
+        widget.onGoTab(3);
+        break;
+      case 'wifi':
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => WifiInfoScreen(client: widget.client)));
+        break;
+      case 'maint':
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => MaintenanceScreen(client: widget.client)));
+        break;
+    }
+  }
+}
+
+class WifiInfoScreen extends StatefulWidget {
+  final RouterClient client;
+  const WifiInfoScreen({super.key, required this.client});
+  @override
+  State<WifiInfoScreen> createState() => _WifiInfoScreenState();
+}
+
+class _WifiInfoScreenState extends State<WifiInfoScreen> {
+  Map<String, dynamic>? _status;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.client.status().then((s) {
+      if (mounted) setState(() => _status = s);
+    }).catchError((_) {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final wifi = _status?['wifi'] as Map<String, dynamic>?;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Wi-Fi')),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            const Icon(Icons.wifi_rounded, color: Color(0xFF00D9B4)),
+            const SizedBox(width: 10),
+            Text(wifi?['ssid'] as String? ?? '—', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+          ]),
+          const SizedBox(height: 6),
+          Text('Устройств: ${wifi?['clients'] ?? '—'}', style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6))),
+        ])),
+        const SizedBox(height: 12),
+        Text('Гостевая сеть и QR-код подключения — нужен новый метод на роутере, пока недоступно.',
+            style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5), fontSize: 12)),
+      ]),
+    );
+  }
+}
+
+class MaintenanceScreen extends StatefulWidget {
+  final RouterClient client;
+  const MaintenanceScreen({super.key, required this.client});
+  @override
+  State<MaintenanceScreen> createState() => _MaintenanceScreenState();
+}
+
+class _MaintenanceScreenState extends _TabState<MaintenanceScreen> {
+  Map<String, dynamic>? _status;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.client.status().then((s) {
+      if (mounted) setState(() => _status = s);
+    }).catchError((_) {});
+  }
+
+  String _fmtUptime(int seconds) {
+    final d = seconds ~/ 86400;
+    final h = (seconds % 86400) ~/ 3600;
+    final m = (seconds % 3600) ~/ 60;
+    final parts = <String>[];
+    if (d > 0) parts.add('${d}д');
+    if (h > 0) parts.add('${h}ч');
+    parts.add('${m}м');
+    return parts.join(' ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cellular = _status?['cellular'] as Map<String, dynamic>?;
+    final sys = _status?['system'] as Map<String, dynamic>?;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Обслуживание')),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        errorBanner(),
+        spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(sys?['board'] as String? ?? 'Huasifei WH3000', style: const TextStyle(fontWeight: FontWeight.w700)),
+          Text('Прошивка: ${sys?['release'] ?? '—'}',
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.55), fontSize: 12)),
+          Text('Аптайм сотовой сети: ${cellular == null ? '—' : _fmtUptime((cellular['uptime'] ?? 0) as int)}',
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.55), fontSize: 12)),
+        ])),
+        const SizedBox(height: 20),
+        FilledButton.icon(
+          onPressed: busy
+              ? null
+              : () => confirmAndRun(
+                    context,
+                    'Перезагрузить роутер?',
+                    'Роутер полностью перезагрузится, Wi-Fi пропадёт на 1-2 минуты.',
+                    () => widget.client.reboot(),
+                  ),
+          icon: const Icon(Icons.power_settings_new),
+          label: const Text('Перезагрузить роутер'),
+          style: FilledButton.styleFrom(backgroundColor: Colors.red.shade900, minimumSize: const Size(double.infinity, 48)),
         ),
+        if (busy) const Padding(padding: EdgeInsets.only(top: 16), child: Center(child: CircularProgressIndicator())),
+      ]),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// VPN: дуга свежести доказательства (реальные updated_at/valid_until
+// туннеля), выход/узел, список живых узлов с выбором.
+// ---------------------------------------------------------------------------
+
+class VpnTab extends StatefulWidget {
+  final RouterClient client;
+  final VoidCallback onOpenSettings;
+  final VoidCallback onLogout;
+  const VpnTab({super.key, required this.client, required this.onOpenSettings, required this.onLogout});
+  @override
+  State<VpnTab> createState() => _VpnTabState();
+}
+
+class _VpnTabState extends _TabState<VpnTab> {
+  Timer? _timer;
+  Map<String, dynamic>? _status;
+  Map<String, dynamic>? _nodes;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    _timer = Timer.periodic(const Duration(seconds: 15), (_) => _refresh());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    await runGuarded(() async {
+      final s = await widget.client.status();
+      Map<String, dynamic>? n;
+      try {
+        n = await widget.client.listNodes();
+      } catch (_) {}
+      if (!mounted) return;
+      setState(() {
+        _status = s;
+        _nodes = n;
+      });
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tunnel = _status?['tunnel'] as Map<String, dynamic>?;
+    final ready = tunnel?['ready'] == true;
+    final egress = tunnel?['external_address'] as String?;
+    final updatedAt = tunnel?['updated_at'] as int?;
+    final validUntil = tunnel?['valid_until'] as int?;
+    final nowS = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    double frac = 0;
+    String ageText = 'нет данных';
+    if (updatedAt != null && validUntil != null && validUntil > updatedAt) {
+      final age = nowS - updatedAt;
+      final window = validUntil - updatedAt;
+      frac = (1 - age / window).clamp(0.0, 1.0);
+      ageText = age < 0 ? '0 с' : '$age с';
+    }
+    final nodes = ((_nodes?['nodes'] as List?) ?? const []).cast<Map<String, dynamic>>();
+    final currentId = _nodes?['current'] as String?;
+    Map<String, dynamic>? currentNode;
+    for (final n in nodes) {
+      if (n['id'] == currentId) currentNode = n;
+    }
+    final sorted = [...nodes]..sort((a, b) {
+        if (a['id'] == currentId) return -1;
+        if (b['id'] == currentId) return 1;
+        final okA = (a['probe_ok'] as int?) ?? 0;
+        final okB = (b['probe_ok'] as int?) ?? 0;
+        return okB.compareTo(okA);
+      });
+
+    return StateGlow(
+      state: ready ? 'ok' : 'warn',
+      child: RefreshIndicator(
+        onRefresh: _refresh,
+        child: ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 110), children: [
+          spottyHeader(context, onOpenSettings: widget.onOpenSettings, onLogout: widget.onLogout),
+          const SizedBox(height: 16),
+          const Text('VPN', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 26)),
+          const SizedBox(height: 12),
+          errorBanner(),
+          spottyCard(context, child: Column(children: [
+            const CapsLabel(icon: Icons.verified_rounded, text: 'Свежесть доказательства'),
+            ArcGauge(
+                frac: frac,
+                color: ready ? const Color(0xFF00D9B4) : Theme.of(context).colorScheme.onSurface.withOpacity(0.3),
+                centerText: ageText,
+                centerSub: 'назад подтверждён'),
+          ])),
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(
+                child: spottyCard(context,
+                    child: _stat(context, egress ?? '—', 'Выход', ready ? 'подтверждён' : 'не подтверждён'))),
+            const SizedBox(width: 12),
+            Expanded(
+                child: spottyCard(context,
+                    child: _stat(context, currentId ?? '—', 'Узел',
+                        currentNode == null ? '—' : cleanNodeName((currentNode['meta'] as Map?)?['name'] as String? ?? '')))),
+          ]),
+          const SizedBox(height: 16),
+          const Text('Узлы', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+          const SizedBox(height: 8),
+          if (sorted.isEmpty)
+            const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Text('Список узлов пуст.', style: TextStyle(color: Colors.white70))),
+          for (final n in sorted)
+            Builder(builder: (context) {
+              final id = n['id'] as String;
+              final isCurrent = id == currentId;
+              final ms = (n['median_ms'] as int?) ?? 99999;
+              final alive = ((n['probe_ok'] as int?) ?? 0) > 0;
+              final name = cleanNodeName((n['meta'] as Map?)?['name'] as String? ?? '');
+              return InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: (!alive || busy || isCurrent)
+                    ? null
+                    : () => runGuarded(() => widget.client.selectNode(id), onDone: _refresh, notify: true),
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: isCurrent
+                        ? const Color(0xFF00D9B4).withOpacity(0.14)
+                        : (Theme.of(context).brightness == Brightness.dark ? const Color(0xFF171A24) : Colors.white),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(children: [
+                    Expanded(flex: 3, child: Text(name, style: const TextStyle(fontWeight: FontWeight.w600))),
+                    Expanded(
+                      flex: 2,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: alive ? (1 - (ms / 150).clamp(0, 1)) : 0,
+                          minHeight: 6,
+                          backgroundColor: Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
+                          color: isCurrent ? const Color(0xFF00D9B4) : Theme.of(context).colorScheme.onSurface.withOpacity(0.35),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(alive ? '$ms мс' : '—',
+                        style: TextStyle(
+                            fontFamily: _mono, fontSize: 12, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.55))),
+                  ]),
+                ),
+              );
+            }),
+        ]),
       ),
+    );
+  }
+
+  Widget _stat(BuildContext context, String value, String title, String sub) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(value,
+              style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 20),
+              overflow: TextOverflow.ellipsis),
+          const SizedBox(height: 4),
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+          Text(sub, style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4), fontSize: 11)),
+        ],
+      );
+}
+
+// ---------------------------------------------------------------------------
+// Сотовая сеть: CSQ-сигнал (rssi_code/ber_code — единственное, что даёт
+// реальный API), оператор/RAT, «за последний час» — «копим историю», пока
+// на роутере нет opscx.metrics_history.
+// ---------------------------------------------------------------------------
+
+class CellularTab extends StatefulWidget {
+  final RouterClient client;
+  final VoidCallback onOpenSettings;
+  final VoidCallback onLogout;
+  const CellularTab({super.key, required this.client, required this.onOpenSettings, required this.onLogout});
+  @override
+  State<CellularTab> createState() => _CellularTabState();
+}
+
+class _CellularTabState extends _TabState<CellularTab> {
+  int? _rssiCode;
+  int? _berCode;
+  String? _plmn;
+  String? _rat;
+  bool _loading = false;
+  List<double>? _history; // остаётся null, пока нет opscx.metrics_history
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    final sig = await widget.client.fetchSignal();
+    final op = await widget.client.fetchOperator();
+    final hist = await widget.client.metricsHistory();
+    if (!mounted) return;
+    setState(() {
+      _rssiCode = sig?['rssi_code'] as int?;
+      _berCode = sig?['ber_code'] as int?;
+      _plmn = op?['plmn'] as String?;
+      _rat = op?['rat'] as String?;
+      _history = (hist?['rsrp'] as List?)?.cast<num>().map((e) => e.toDouble()).toList();
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dbm = csqToDbm(_rssiCode);
+    final berText = berQualityText(_berCode);
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 110), children: [
+        spottyHeader(context, onOpenSettings: widget.onOpenSettings, onLogout: widget.onLogout),
+        const SizedBox(height: 16),
+        const Text('Сотовая сеть', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 26)),
+        Text(
+            (_plmn != null ? 'PLMN $_plmn${_rat != null ? ' · $_rat' : ''}' : 'оператор неизвестен') +
+                (_loading ? ' · обновляется…' : ''),
+            style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5), fontSize: 12)),
+        const SizedBox(height: 16),
+        errorBanner(),
+        spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const CapsLabel(icon: Icons.podcasts_rounded, text: 'Уровень сигнала'),
+          const SizedBox(height: 8),
+          Text(dbm == null ? 'нет данных' : '$dbm дБм',
+              style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 26)),
+          const SizedBox(height: 8),
+          ThresholdScale(
+            frac: dbm == null ? 0 : ((dbm + 113) / 53).clamp(0, 1),
+            stops: const [Color(0xFFFF5470), Color(0xFFFFB84D), Color(0xFF00D9B4), Color(0xFF00A8FF)],
+            label: dbm == null ? 'нет данных (CSQ)' : '${signalBucketLabel(dbm)} · оценка по RSSI (CSQ)',
+          ),
+        ])),
+        const SizedBox(height: 10),
+        spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const CapsLabel(icon: Icons.error_outline_rounded, text: 'Качество канала (BER)'),
+          const SizedBox(height: 8),
+          Text(berText, style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 22)),
+        ])),
+        const SizedBox(height: 10),
+        spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            const CapsLabel(icon: Icons.timeline_rounded, text: 'За последний час'),
+            if (_rat != null)
+              Text(_rat!,
+                  style: TextStyle(
+                      fontFamily: _mono, fontSize: 12, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.55))),
+          ]),
+          const SizedBox(height: 10),
+          (_history != null && _history!.length >= 2)
+              ? SizedBox(height: 48, child: Spark(series: _history!, color: const Color(0xFF00D9B4)))
+              : SizedBox(
+                  height: 48,
+                  child: Center(
+                    child: Text('копим историю — на роутере пока нет opscx.metrics_history',
+                        style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4)),
+                        textAlign: TextAlign.center),
+                  ),
+                ),
+        ])),
+        const SizedBox(height: 16),
+        FilledButton.icon(
+          onPressed: busy
+              ? null
+              : () => confirmAndRun(
+                    context,
+                    'Перезапустить модем/сотовую связь?',
+                    'Роутер отключит и заново поднимет сотовое соединение (reconnect_cellular). '
+                        'Интернет пропадёт на несколько секунд.',
+                    () => widget.client.action('reconnect_cellular'),
+                    onDone: _load,
+                  ),
+          style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 48)),
+          icon: const Icon(Icons.settings_input_antenna_rounded),
+          label: const Text('Переподключить'),
+        ),
+        if (busy) const Padding(padding: EdgeInsets.only(top: 16), child: Center(child: CircularProgressIndicator())),
+      ]),
     );
   }
 }
@@ -1313,6 +2192,310 @@ String cleanNodeName(String raw) {
   return flag == null ? rest : '$flag $rest';
 }
 
+/// Regional-indicator флаг по двухбуквенному ISO-коду страны узла (`loc`).
+String flagFromLoc(String? loc) {
+  if (loc == null || loc.length != 2 || loc.toUpperCase() == 'XX') return '🏳️';
+  const base = 0x1F1E6;
+  final cc = loc.toUpperCase();
+  final a = base + (cc.codeUnitAt(0) - 'A'.codeUnitAt(0));
+  final b = base + (cc.codeUnitAt(1) - 'A'.codeUnitAt(0));
+  return String.fromCharCode(a) + String.fromCharCode(b);
+}
+
+// =============================================================================
+// Общий визуальный набор B2 (перенесён из lib/main_concepts.dart — референсы
+// The Outsiders «Today»/«Customize», RAD Weather Details, Dropset «Workouts»):
+// свечение по состоянию, пилюли-метрики со спарклайном (или «копим историю»,
+// если реальной истории ещё нет), капс-подписи, шкала-градиент с порогом,
+// дуга свежести, плавающий таб-бар-пилюля, круглые иконки в шапке.
+// =============================================================================
+
+const _mono = 'monospace';
+
+Color _glowColor(String state) => switch (state) {
+      'ok' => const Color(0xFF00D9B4),
+      'warn' => const Color(0xFFFFB84D),
+      _ => const Color(0xFFFF5470),
+    };
+
+/// Фоновое свечение сверху экрана, цвет = состояние вердикта диагностики.
+class StateGlow extends StatelessWidget {
+  final String state;
+  final Widget child;
+  const StateGlow({super.key, required this.state, required this.child});
+  @override
+  Widget build(BuildContext context) {
+    final c = _glowColor(state);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Stack(children: [
+      Positioned(
+        top: 0,
+        left: 0,
+        right: 0,
+        height: 340,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [c.withOpacity(isDark ? 0.38 : 0.22), c.withOpacity(0.0)],
+            ),
+          ),
+        ),
+      ),
+      child,
+    ]);
+  }
+}
+
+/// Мини-спарклайн с точкой текущего значения.
+class Spark extends StatelessWidget {
+  final List<double> series;
+  final Color color;
+  const Spark({super.key, required this.series, required this.color});
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: 28,
+        width: double.infinity,
+        child: CustomPaint(painter: _SparkPainter(series, color)),
+      );
+}
+
+class _SparkPainter extends CustomPainter {
+  final List<double> series;
+  final Color color;
+  _SparkPainter(this.series, this.color);
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (series.length < 2) return;
+    final minV = series.reduce((a, b) => a < b ? a : b);
+    final maxV = series.reduce((a, b) => a > b ? a : b);
+    final range = (maxV - minV).abs() < 0.001 ? 1.0 : (maxV - minV);
+    final dx = size.width / (series.length - 1);
+    final path = Path();
+    for (var i = 0; i < series.length; i++) {
+      final x = dx * i;
+      final y = size.height - ((series[i] - minV) / range) * size.height;
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..strokeCap = StrokeCap.round);
+    final lastX = size.width;
+    final lastY = size.height - ((series.last - minV) / range) * size.height;
+    canvas.drawCircle(Offset(lastX, lastY), 3.5, Paint()..color = color);
+    canvas.drawCircle(Offset(lastX, lastY), 6, Paint()..color = color.withOpacity(0.25));
+  }
+
+  @override
+  bool shouldRepaint(covariant _SparkPainter oldDelegate) => false;
+}
+
+/// Вертикальная пилюля-метрика: крупное число + единица + мини-спарклайн.
+/// series == null или короче 2 точек — история ещё не накоплена (нет
+/// opscx.metrics_history на роутере): показывает «копим историю», НИКОГДА
+/// не подставляет выдуманные точки.
+class MetricPill extends StatelessWidget {
+  final IconData icon;
+  final double? value;
+  final String unit;
+  final List<double>? series;
+  final Color color;
+  const MetricPill(
+      {super.key,
+      required this.icon,
+      required this.value,
+      required this.unit,
+      required this.series,
+      required this.color});
+  @override
+  Widget build(BuildContext context) {
+    final cardColor =
+        Theme.of(context).brightness == Brightness.dark ? const Color(0xFF171A24) : Colors.white;
+    final v = value;
+    return Container(
+      width: 92,
+      margin: const EdgeInsets.only(right: 10),
+      padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
+      decoration: BoxDecoration(color: cardColor, borderRadius: BorderRadius.circular(22)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Icon(icon, size: 16, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5)),
+        const SizedBox(height: 10),
+        Text(
+            v == null
+                ? '—'
+                : (v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1)),
+            style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w700, fontSize: 21)),
+        Text(unit,
+            style: TextStyle(
+                fontFamily: _mono, fontSize: 11, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.45))),
+        const SizedBox(height: 6),
+        (series != null && series!.length >= 2)
+            ? Spark(series: series!, color: color)
+            : SizedBox(
+                height: 28,
+                child: Align(
+                  alignment: Alignment.bottomLeft,
+                  child: Text('копим историю',
+                      style: TextStyle(fontSize: 9, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.35))),
+                ),
+              ),
+      ]),
+    );
+  }
+}
+
+/// Капс-подпись секции с иконкой.
+class CapsLabel extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const CapsLabel({super.key, required this.icon, required this.text});
+  @override
+  Widget build(BuildContext context) => Row(children: [
+        Icon(icon, size: 14, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.55)),
+        const SizedBox(width: 6),
+        Text(text.toUpperCase(),
+            style: TextStyle(
+                fontSize: 11,
+                letterSpacing: 1.1,
+                fontWeight: FontWeight.w700,
+                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.55))),
+      ]);
+}
+
+/// Шкала-градиент с порогами и маркером текущего значения.
+class ThresholdScale extends StatelessWidget {
+  final double frac; // 0..1 положение маркера
+  final List<Color> stops;
+  final String label;
+  const ThresholdScale({super.key, required this.frac, required this.stops, required this.label});
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        SizedBox(
+          height: 10,
+          child: Stack(clipBehavior: Clip.none, children: [
+            Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                gradient: LinearGradient(colors: stops),
+              ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              top: -3,
+              child: Align(
+                alignment: Alignment(frac.clamp(0, 1) * 2 - 1, 0),
+                child: Container(width: 3, height: 16, color: Colors.white),
+              ),
+            ),
+          ]),
+        ),
+        const SizedBox(height: 6),
+        Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+      ]);
+}
+
+/// Дуга свежести (0..1). Используется для возраста последнего подтверждённого
+/// состояния VPN-туннеля — реальные updated_at/valid_until с роутера.
+class ArcGauge extends StatelessWidget {
+  final double frac;
+  final Color color;
+  final String centerText;
+  final String centerSub;
+  const ArcGauge(
+      {super.key, required this.frac, required this.color, required this.centerText, required this.centerSub});
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: 118,
+        child: Stack(alignment: Alignment.bottomCenter, children: [
+          CustomPaint(
+              size: const Size(double.infinity, 110),
+              painter: _ArcPainter(
+                  frac: frac,
+                  color: color,
+                  trackColor: Theme.of(context).colorScheme.onSurface.withOpacity(0.1))),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 18),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text(centerText, style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 22)),
+              Text(centerSub, style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.55))),
+            ]),
+          ),
+        ]),
+      );
+}
+
+class _ArcPainter extends CustomPainter {
+  final double frac;
+  final Color color;
+  final Color trackColor;
+  _ArcPainter({required this.frac, required this.color, required this.trackColor});
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Rect.fromLTWH(8, 8, size.width - 16, size.width - 16);
+    const start = 3.14159;
+    const sweep = 3.14159;
+    canvas.drawArc(rect, start, sweep, false,
+        Paint()..color = trackColor..style = PaintingStyle.stroke..strokeWidth = 8..strokeCap = StrokeCap.round);
+    canvas.drawArc(rect, start, sweep * frac.clamp(0, 1), false,
+        Paint()..color = color..style = PaintingStyle.stroke..strokeWidth = 8..strokeCap = StrokeCap.round);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ArcPainter oldDelegate) =>
+      oldDelegate.frac != frac || oldDelegate.color != color || oldDelegate.trackColor != trackColor;
+}
+
+Widget roundHeaderIcon(BuildContext context, IconData icon, {VoidCallback? onTap}) => InkWell(
+      onTap: onTap,
+      customBorder: const CircleBorder(),
+      child: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: Theme.of(context).brightness == Brightness.dark ? Colors.white10 : Colors.black12,
+          shape: BoxShape.circle,
+        ),
+        child: Icon(icon, size: 18),
+      ),
+    );
+
+Widget spottyBrand({bool big = false}) => Builder(builder: (context) {
+      final cs = Theme.of(context).colorScheme;
+      return Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+          width: big ? 40 : 28,
+          height: big ? 40 : 28,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(colors: [cs.primary, cs.tertiary]),
+          ),
+          child: const Icon(Icons.blur_on_rounded, color: Colors.white, size: 18),
+        ),
+        const SizedBox(width: 10),
+        Text('Spotty', style: TextStyle(fontWeight: FontWeight.w800, fontSize: big ? 22 : 18)),
+      ]);
+    });
+
+Widget spottyCard(BuildContext context, {required Widget child}) => Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF171A24) : Colors.white,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: child,
+    );
+
 // ---------------------------------------------------------------------------
 // Узлы: список из list_nodes, select_node, Авто/Ручной, "Проверить узлы".
 // ---------------------------------------------------------------------------
@@ -1350,14 +2533,7 @@ class _NodesTabState extends _TabState<NodesTab> {
     });
   }
 
-  String _flagFromLoc(String? loc) {
-    if (loc == null || loc.length != 2 || loc == 'XX') return '🏳️';
-    final base = 0x1F1E6;
-    final cc = loc.toUpperCase();
-    final a = base + (cc.codeUnitAt(0) - 'A'.codeUnitAt(0));
-    final b = base + (cc.codeUnitAt(1) - 'A'.codeUnitAt(0));
-    return String.fromCharCode(a) + String.fromCharCode(b);
-  }
+  String _flagFromLoc(String? loc) => flagFromLoc(loc);
 
   @override
   Widget build(BuildContext context) {
