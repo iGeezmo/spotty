@@ -356,7 +356,7 @@ class RouterClient {
         'ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
         'verdict': {'state': 'warn', 'text': 'Сеть работает, но слой DNS отвечает медленно'},
         'layers': [
-          {'id': 1, 'name': 'Сотовый модем', 'state': 'ok', 'reason': 'Подключён'},
+          {'id': 1, 'name': 'Сотовая сеть', 'state': 'ok', 'reason': 'на связи · LTE B7 · RSRP -94 дБм (средне)', 'data': {'radio': {'rat': 'LTE', 'band': 'B7', 'rsrp_dbm': -94, 'rsrq_db': -8, 'sinr_raw': 15}}},
           {'id': 2, 'name': 'IP по сотовой сети', 'state': 'ok', 'reason': 'Адрес получен'},
           {'id': 3, 'name': 'DNS', 'state': 'warn', 'reason': 'Ответ за 640 мс'},
           {'id': 4, 'name': 'VPN-туннель', 'state': 'ok', 'reason': 'Установлен'},
@@ -387,21 +387,24 @@ class RouterClient {
         ],
       };
     }
-    if (object == 'opscx' && method == 'modem_request') {
-      return {'accepted': true, 'id': 'mock-id-${params['diagnostic']}', 'diagnostic': params['diagnostic'], 'error': null};
-    }
-    if (object == 'opscx' && method == 'modem_result') {
-      final id = params['id'] as String? ?? '';
-      if (id.contains('signal')) {
-        return {'state': 'complete', 'id': id, 'result': {'command': 'signal', 'status': 'ok', 'data': {'rssi_code': 17, 'ber_code': 1}}, 'error': null};
-      }
-      if (id.contains('operator')) {
-        return {'state': 'complete', 'id': id, 'result': {'command': 'operator', 'status': 'ok', 'data': {'plmn': '41501', 'rat': 'LTE'}}, 'error': null};
-      }
-      return {'state': 'unavailable', 'id': id, 'result': null, 'error': 'mock'};
-    }
     if (object == 'opscx' && method == 'metrics_history') {
-      throw RouterForbiddenError('mock: metrics_history not implemented');
+      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      return {
+        'points': List.generate(12, (i) {
+          final t = now - (11 - i) * 30;
+          return {
+            't': t,
+            'rsrp': -95 + (i % 4),
+            'rsrq': -9 + (i % 2),
+            'sinr': 12 + (i % 3),
+            'band': 'B7',
+            'ping_ms': i == 5 ? null : 55.0 - i,
+            'vpn': true,
+            'clients': 4,
+            'probe_fail_pct': 18 - (i % 5),
+          };
+        }),
+      };
     }
     if (object == 'system' && method == 'reboot') return {};
     if (object == 'opscx' && (method == 'action' || method == 'select_node' || method == 'refresh_now' || method == 'set_subscription' || method == 'set_interval')) {
@@ -543,49 +546,13 @@ class RouterClient {
         (sid) => _rpc(sid, 'opscx', 'set_interval', {'minutes': minutes}));
   }
 
-  // -- Сотовая диагностика (opscx-modem-command, асинхронный запрос/результат) --
-  // Контракт: modem_request({diagnostic: "signal"|"registration"|"operator"})
-  // -> {accepted, id}; затем поллинг modem_result({id}) до state != "pending".
-  // "signal" даёт только CSQ (rssi_code 0-31|99, ber_code 0-7|99) — детального
-  // RSRP/RSRQ/SINR в API нет, дБм оцениваются по стандартной формуле CSQ.
-
-  Future<Map<String, dynamic>?> _modemDiagnostic(String diagnostic) async {
+  /// {points:[{t,rsrp,rsrq,sinr,band,ping_ms,vpn,clients,probe_fail_pct}]} —
+  /// реальный opscx.metrics_history (rpcd). Любое поле может быть null.
+  /// Тихо возвращает null при ошибке — НИКОГДА не подставляет выдуманные точки.
+  Future<Map<String, dynamic>?> metricsHistory({int points = 60}) async {
     try {
-      final req = await _withSession(
-          (sid) => _rpc(sid, 'opscx', 'modem_request', {'diagnostic': diagnostic}));
-      final id = req['id'] as String?;
-      if (req['accepted'] != true || id == null) return null;
-      for (var i = 0; i < 8; i++) {
-        await Future.delayed(const Duration(milliseconds: 400));
-        final res = await _withSession(
-            (sid) => _rpc(sid, 'opscx', 'modem_result', {'id': id}));
-        final state = res['state'] as String?;
-        if (state == 'complete') {
-          final result = res['result'] as Map<String, dynamic>?;
-          if (result != null && result['status'] == 'ok') {
-            return result['data'] as Map<String, dynamic>?;
-          }
-          return null;
-        }
-        if (state == 'unavailable') return null;
-      }
-      return null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// {rssi_code, ber_code} — CSQ, или null если модем/API недоступны.
-  Future<Map<String, dynamic>?> fetchSignal() => _modemDiagnostic('signal');
-
-  /// {plmn, rat} — или null если недоступно.
-  Future<Map<String, dynamic>?> fetchOperator() => _modemDiagnostic('operator');
-
-  /// Пока нет на роутере (добавляется отдельно) — тихо возвращает null,
-  /// НИКОГДА не подставляет выдуманные точки истории.
-  Future<Map<String, dynamic>?> metricsHistory() async {
-    try {
-      return await _withSession((sid) => _rpc(sid, 'opscx', 'metrics_history', {}));
+      return await _withSession(
+          (sid) => _rpc(sid, 'opscx', 'metrics_history', {'points': points}));
     } catch (_) {
       return null;
     }
@@ -593,30 +560,32 @@ class RouterClient {
 }
 
 // ---------------------------------------------------------------------------
-// CSQ (сотовый сигнал) — единственный реально доступный на этом модеме формат:
-// AT+CSQ даёт rssi_code 0..31 (99 = неизвестно) и ber_code 0..7 (99 = неизвестно).
-// dBm — стандартная 3GPP-оценка по коду, не отдельное измерение RSRP.
+// Сотовый сигнал — реальные поля из diag_status(), слой "Сотовая сеть":
+// layers[].data.radio = {rat, band, rsrp_dbm, rsrq_db, sinr_raw, ...}
+// (opscx-diag читает /tmp/run/opscx-fm350/signal.json). Пороги — из
+// собственной подсказки роутера (RSRP LTE: >-90 хорошо, -90..-105 средне,
+// <-105 плохо). Никакой оценки по CSQ, никаких выдуманных единиц.
 // ---------------------------------------------------------------------------
-int? csqToDbm(int? code) {
-  if (code == null || code < 0 || code > 31) return null;
-  return -113 + 2 * code;
+
+/// Слой диагностики "Сотовая сеть" (id=1) из diag_status(), или null.
+Map<String, dynamic>? cellularLayer(Map<String, dynamic>? diag) {
+  final layers = (diag?['layers'] as List?) ?? const [];
+  for (final l in layers) {
+    final m = l as Map<String, dynamic>;
+    if (m['id'] == 1) return m;
+  }
+  return null;
 }
 
-const _berBuckets = [
-  '<0.2%', '0.2–0.4%', '0.4–0.8%', '0.8–1.6%',
-  '1.6–3.2%', '3.2–6.4%', '6.4–12.8%', '>12.8%',
-];
-
-String berQualityText(int? code) {
-  if (code == null || code < 0 || code > 7) return 'нет данных';
-  return _berBuckets[code];
+Map<String, dynamic>? radioData(Map<String, dynamic>? diag) {
+  final layer = cellularLayer(diag);
+  return (layer?['data'] as Map<String, dynamic>?)?['radio'] as Map<String, dynamic>?;
 }
 
-String signalBucketLabel(int? dbm) {
-  if (dbm == null) return 'нет данных';
-  if (dbm >= -80) return 'Хорошо';
-  if (dbm >= -95) return 'Средне';
-  if (dbm >= -105) return 'Слабо';
+String signalBucketLabel(num? rsrpDbm) {
+  if (rsrpDbm == null) return 'нет данных';
+  if (rsrpDbm > -90) return 'Хорошо';
+  if (rsrpDbm > -105) return 'Средне';
   return 'Плохо';
 }
 
@@ -1248,14 +1217,11 @@ class _HomeTabState extends _TabState<HomeTab> {
   Map<String, dynamic>? _diag;
   Map<String, dynamic>? _nodes;
   Map<String, dynamic>? _subs;
-  int? _rssiCode;
-  bool _signalLoading = false;
 
   @override
   void initState() {
     super.initState();
     _refresh();
-    _loadSignal();
     _timer = Timer.periodic(const Duration(seconds: 15), (_) => _refresh());
   }
 
@@ -1263,15 +1229,6 @@ class _HomeTabState extends _TabState<HomeTab> {
   void dispose() {
     _timer?.cancel();
     super.dispose();
-  }
-
-  Future<void> _loadSignal() async {
-    if (_signalLoading) return;
-    _signalLoading = true;
-    final data = await widget.client.fetchSignal();
-    _signalLoading = false;
-    if (!mounted) return;
-    setState(() => _rssiCode = data?['rssi_code'] as int?);
   }
 
   Future<void> _refresh() async {
@@ -1334,12 +1291,14 @@ class _HomeTabState extends _TabState<HomeTab> {
     final verdictText = verdict?['text'] as String? ?? 'нет данных диагностики';
     final subsList = ((_subs?['subs'] as List?) ?? const []).cast<Map<String, dynamic>>();
     final aliveCount = subsList.where((s) => s['result'] == 'ok').length;
-    final dbm = csqToDbm(_rssiCode);
+    final radio = radioData(_diag);
+    final dbm = radio?['rsrp_dbm'] as int?;
+    final band = radio?['band'] as String?;
 
     return StateGlow(
       state: verdictState,
       child: RefreshIndicator(
-        onRefresh: () => Future.wait([_refresh(), _loadSignal()]),
+        onRefresh: _refresh,
         child: ListView(padding: const EdgeInsets.only(bottom: 110), children: [
           spottyHeader(context,
               onOpenSettings: widget.onOpenSettings,
@@ -1383,7 +1342,7 @@ class _HomeTabState extends _TabState<HomeTab> {
                 MetricPill(
                     icon: Icons.podcasts_rounded,
                     value: dbm?.toDouble(),
-                    unit: 'дБм · сигнал',
+                    unit: 'дБм · RSRP',
                     series: null,
                     color: const Color(0xFF00D9B4)),
                 MetricPill(
@@ -1436,9 +1395,9 @@ class _HomeTabState extends _TabState<HomeTab> {
               ]),
               const SizedBox(height: 10),
               ThresholdScale(
-                frac: dbm == null ? 0 : ((dbm + 113) / 53).clamp(0, 1),
+                frac: dbm == null ? 0 : ((dbm + 120) / 50).clamp(0, 1),
                 stops: const [Color(0xFFFF5470), Color(0xFFFFB84D), Color(0xFF00D9B4), Color(0xFF00A8FF)],
-                label: dbm == null ? 'копим данные (CSQ)' : 'Оценка по RSSI (CSQ)',
+                label: dbm == null ? 'нет данных' : (band != null ? 'LTE $band' : 'RSRP'),
               ),
             ])),
           ),
@@ -1894,9 +1853,9 @@ class _VpnTabState extends _TabState<VpnTab> {
 }
 
 // ---------------------------------------------------------------------------
-// Сотовая сеть: CSQ-сигнал (rssi_code/ber_code — единственное, что даёт
-// реальный API), оператор/RAT, «за последний час» — «копим историю», пока
-// на роутере нет opscx.metrics_history.
+// Сотовая сеть: RSRP/RSRQ/SINR/диапазон из diag_status() (слой "Сотовая
+// сеть"), история — opscx.metrics_history({points}); нет modem_request/
+// modem_result на роутере — они не вызываются вовсе.
 // ---------------------------------------------------------------------------
 
 class CellularTab extends StatefulWidget {
@@ -1908,40 +1867,70 @@ class CellularTab extends StatefulWidget {
   State<CellularTab> createState() => _CellularTabState();
 }
 
+/// Оставляет только точки, где поле не null, конвертирует к double.
+/// Пустой/однооэлементный результат — «копим историю», без выдумки.
+List<double>? _seriesOf(List? points, String key) {
+  if (points == null) return null;
+  final vals = <double>[];
+  for (final p in points) {
+    final v = (p as Map)[key];
+    if (v is num) vals.add(v.toDouble());
+  }
+  return vals;
+}
+
 class _CellularTabState extends _TabState<CellularTab> {
-  int? _rssiCode;
-  int? _berCode;
-  String? _plmn;
-  String? _rat;
+  Timer? _timer;
+  Map<String, dynamic>? _diag;
+  List? _historyPoints;
   bool _loading = false;
-  List<double>? _history; // остаётся null, пока нет opscx.metrics_history
 
   @override
   void initState() {
     super.initState();
     _load();
+    _timer = Timer.periodic(const Duration(seconds: 20), (_) => _load());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
   }
 
   Future<void> _load() async {
+    if (!mounted) return;
     setState(() => _loading = true);
-    final sig = await widget.client.fetchSignal();
-    final op = await widget.client.fetchOperator();
-    final hist = await widget.client.metricsHistory();
+    Map<String, dynamic>? diag;
+    List? hist;
+    try {
+      diag = await widget.client.diagStatus();
+    } catch (_) {}
+    final histResp = await widget.client.metricsHistory(points: 120);
+    hist = histResp?['points'] as List?;
     if (!mounted) return;
     setState(() {
-      _rssiCode = sig?['rssi_code'] as int?;
-      _berCode = sig?['ber_code'] as int?;
-      _plmn = op?['plmn'] as String?;
-      _rat = op?['rat'] as String?;
-      _history = (hist?['rsrp'] as List?)?.cast<num>().map((e) => e.toDouble()).toList();
+      _diag = diag;
+      _historyPoints = hist;
       _loading = false;
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final dbm = csqToDbm(_rssiCode);
-    final berText = berQualityText(_berCode);
+    final radio = radioData(_diag);
+    final layer = cellularLayer(_diag);
+    final layerState = layer?['state'] as String?;
+    final dbm = radio?['rsrp_dbm'] as int?;
+    final rsrq = radio?['rsrq_db'] as int?;
+    final sinr = radio?['sinr_raw'] as int?;
+    final band = radio?['band'] as String?;
+    final rat = radio?['rat'] as String?;
+
+    final rsrpSeries = _seriesOf(_historyPoints, 'rsrp');
+    final pingSeries = _seriesOf(_historyPoints, 'ping_ms');
+    final sinrSeries = _seriesOf(_historyPoints, 'sinr');
+    final failSeries = _seriesOf(_historyPoints, 'probe_fail_pct');
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -1950,50 +1939,54 @@ class _CellularTabState extends _TabState<CellularTab> {
         const SizedBox(height: 16),
         const Text('Сотовая сеть', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 26)),
         Text(
-            (_plmn != null ? 'PLMN $_plmn${_rat != null ? ' · $_rat' : ''}' : 'оператор неизвестен') +
-                (_loading ? ' · обновляется…' : ''),
+            (rat != null && band != null ? '$rat $band' : 'нет данных') + (_loading ? ' · обновляется…' : ''),
             style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5), fontSize: 12)),
         const SizedBox(height: 16),
         errorBanner(),
+        if (layerState != null && layerState != 'ok')
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: spottyCard(context,
+                child: Row(children: [
+                  Icon(diagStateIcon(layerState), color: diagStateColor(layerState)),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(layer?['reason'] as String? ?? '—')),
+                ])),
+          ),
         spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const CapsLabel(icon: Icons.podcasts_rounded, text: 'Уровень сигнала'),
+          const CapsLabel(icon: Icons.podcasts_rounded, text: 'RSRP'),
           const SizedBox(height: 8),
           Text(dbm == null ? 'нет данных' : '$dbm дБм',
               style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 26)),
           const SizedBox(height: 8),
           ThresholdScale(
-            frac: dbm == null ? 0 : ((dbm + 113) / 53).clamp(0, 1),
+            frac: dbm == null ? 0 : ((dbm + 120) / 50).clamp(0, 1),
             stops: const [Color(0xFFFF5470), Color(0xFFFFB84D), Color(0xFF00D9B4), Color(0xFF00A8FF)],
-            label: dbm == null ? 'нет данных (CSQ)' : '${signalBucketLabel(dbm)} · оценка по RSSI (CSQ)',
+            label: '${signalBucketLabel(dbm)}${band != null ? ' · LTE $band' : ''}',
           ),
         ])),
         const SizedBox(height: 10),
         spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const CapsLabel(icon: Icons.error_outline_rounded, text: 'Качество канала (BER)'),
+          const CapsLabel(icon: Icons.compare_arrows_rounded, text: 'RSRQ'),
           const SizedBox(height: 8),
-          Text(berText, style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 22)),
+          Text(rsrq == null ? 'нет данных' : '$rsrq дБ',
+              style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 22)),
         ])),
         const SizedBox(height: 10),
         spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            const CapsLabel(icon: Icons.timeline_rounded, text: 'За последний час'),
-            if (_rat != null)
-              Text(_rat!,
-                  style: TextStyle(
-                      fontFamily: _mono, fontSize: 12, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.55))),
-          ]),
-          const SizedBox(height: 10),
-          (_history != null && _history!.length >= 2)
-              ? SizedBox(height: 48, child: Spark(series: _history!, color: const Color(0xFF00D9B4)))
-              : SizedBox(
-                  height: 48,
-                  child: Center(
-                    child: Text('копим историю — на роутере пока нет opscx.metrics_history',
-                        style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4)),
-                        textAlign: TextAlign.center),
-                  ),
-                ),
+          const CapsLabel(icon: Icons.graphic_eq_rounded, text: 'SINR'),
+          const SizedBox(height: 8),
+          Text(sinr == null ? 'нет данных' : '$sinr дБ',
+              style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 22)),
         ])),
+        const SizedBox(height: 10),
+        _historyCard(context, 'RSRP · история', rsrpSeries, const Color(0xFF00D9B4)),
+        const SizedBox(height: 10),
+        _historyCard(context, 'Пинг · история', pingSeries, const Color(0xFF5B6EF5)),
+        const SizedBox(height: 10),
+        _historyCard(context, 'SINR · история', sinrSeries, const Color(0xFF00D9B4)),
+        const SizedBox(height: 10),
+        _historyCard(context, 'Провалы пробы, % · история', failSeries, const Color(0xFFFFB84D)),
         const SizedBox(height: 16),
         FilledButton.icon(
           onPressed: busy
@@ -2013,6 +2006,22 @@ class _CellularTabState extends _TabState<CellularTab> {
         if (busy) const Padding(padding: EdgeInsets.only(top: 16), child: Center(child: CircularProgressIndicator())),
       ]),
     );
+  }
+
+  Widget _historyCard(BuildContext context, String label, List<double>? series, Color color) {
+    return spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      CapsLabel(icon: Icons.timeline_rounded, text: label),
+      const SizedBox(height: 10),
+      (series != null && series.length >= 2)
+          ? SizedBox(height: 40, child: Spark(series: series, color: color))
+          : SizedBox(
+              height: 40,
+              child: Center(
+                child: Text('копим историю',
+                    style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurface.withOpacity(0.4))),
+              ),
+            ),
+    ]));
   }
 }
 
