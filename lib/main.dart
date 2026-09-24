@@ -31,6 +31,8 @@ import 'package:open_filex/open_filex.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'toolbox/screens.dart';
+
 void main() {
   runApp(const HuasifeiApp());
 }
@@ -410,6 +412,48 @@ class RouterClient {
     if (object == 'opscx' && (method == 'action' || method == 'select_node' || method == 'refresh_now' || method == 'set_subscription' || method == 'set_interval')) {
       return {};
     }
+    if (object == 'spotty' && method == 'devices') {
+      return {
+        'schema': 'spotty.devices/1',
+        'updated_at': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        'devices': [
+          {'mac_masked': '10:16:b1:**:**:f7', 'ip': '192.168.5.242', 'hostname': 'OPPO-Find-N6', 'link': 'wifi', 'band': '5g', 'signal_dbm': -70, 'rx_bytes': 3175845, 'tx_bytes': 9146639, 'source': 'hostapd'},
+          {'mac_masked': 'c6:25:c1:**:**:5e', 'ip': '192.168.5.170', 'hostname': 'OWWE261', 'link': 'wifi', 'band': '5g', 'signal_dbm': -58, 'rx_bytes': 842112, 'tx_bytes': 190044, 'source': 'hostapd'},
+          {'mac_masked': 'a4:83:e7:**:**:01', 'ip': '192.168.5.88', 'hostname': null, 'link': 'lan', 'band': null, 'signal_dbm': null, 'rx_bytes': 55210, 'tx_bytes': 0, 'source': 'conntrack'},
+        ],
+        'stale': false,
+      };
+    }
+    if (object == 'spotty' && method == 'guest_status') {
+      return {'schema': 'spotty.guest/1', 'supported': true, 'enabled': false, 'ssid': 'Huasifei-Guest', 'configured': true};
+    }
+    if (object == 'spotty' && method == 'guest_set') {
+      return {'accepted': true, 'enabled': params['enabled'], 'error': null};
+    }
+    if (object == 'spotty' && method == 'guest_qr') {
+      return {'accepted': true, 'ssid': 'Huasifei-Guest', 'qr': 'WIFI:T:WPA;S:Huasifei-Guest;P:mockmockmock01;;', 'error': null};
+    }
+    if (object == 'spotty' && method == 'guest_rotate') {
+      return {'accepted': true, 'error': null};
+    }
+    if (object == 'spotty' && method == 'events') {
+      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      return {
+        'schema': 'spotty.events/1',
+        'updated_at': now,
+        'events': [
+          {'ts': now - 4, 'tag': 'mode', 'text': 'LED_TICK vpn'},
+          {'ts': now - 40, 'tag': 'cellular', 'text': 'FM350_TICK ready'},
+          {'ts': now - 95, 'tag': 'hold', 'text': 'WORKER_HOLD VPN_UNVERIFIED'},
+          {'ts': now - 200, 'tag': 'worker', 'text': 'WORKER_TICK vpn healthy'},
+          {'ts': now - 610, 'tag': 'diag', 'text': 'opscx-diag: 6/7 слоёв ok'},
+        ],
+        'stale': false,
+      };
+    }
+    if (object == 'spotty' && method == 'set_mode') {
+      return {'accepted': true, 'requested_mode': params['mode'], 'error': null};
+    }
     return {};
   }
 
@@ -509,6 +553,49 @@ class RouterClient {
   /// Запускает полный прогон диагностики на роутере (фоново).
   Future<Map<String, dynamic>> diagRun() {
     return _withSession((sid) => _rpc(sid, 'opscx', 'diag_run', {}));
+  }
+
+  // -- Toolbox (rpcd object "spotty" — devices/guest wifi/events/mode) ------
+  // Отдельный ubus-объект от "opscx": design в
+  // .agent (см. ops-receipts/opscl-spotty-modules-20260924/router/design.md).
+  // Бэкенд ещё не установлен на роутер — используются только в mock-режиме
+  // до отдельного релиза после install-plan.
+
+  /// schema spotty.devices/1: {devices:[{mac_masked, ip, hostname, link, band, signal_dbm, rx_bytes, tx_bytes, source}]}
+  Future<Map<String, dynamic>> toolboxDevices() {
+    return _withSession((sid) => _rpc(sid, 'spotty', 'devices', {}));
+  }
+
+  /// schema spotty.guest/1: {supported, enabled, ssid, configured}
+  Future<Map<String, dynamic>> guestStatus() {
+    return _withSession((sid) => _rpc(sid, 'spotty', 'guest_status', {}));
+  }
+
+  Future<Map<String, dynamic>> guestSet(bool enabled) {
+    return _withSession(
+        (sid) => _rpc(sid, 'spotty', 'guest_set', {'enabled': enabled}));
+  }
+
+  /// Возвращает {ssid, qr} — qr уже содержит пароль в формате WIFI:T:WPA;...;;
+  /// (см. design.md: "только QR" значит без отдельного поля psk, а не без
+  /// раскрытия — сам QR обязан содержать пароль, иначе его нельзя отсканировать).
+  Future<Map<String, dynamic>> guestQr() {
+    return _withSession((sid) => _rpc(sid, 'spotty', 'guest_qr', {}));
+  }
+
+  Future<Map<String, dynamic>> guestRotate() {
+    return _withSession((sid) => _rpc(sid, 'spotty', 'guest_rotate', {}));
+  }
+
+  /// schema spotty.events/1: {events:[{ts, tag, text}]}
+  Future<Map<String, dynamic>> toolboxEvents({int lines = 100}) {
+    return _withSession(
+        (sid) => _rpc(sid, 'spotty', 'events', {'lines': lines}));
+  }
+
+  /// mode: "direct" | "vpn" — та же команда, что signal-control set_mode.
+  Future<Map<String, dynamic>> setMode(String mode) {
+    return _withSession((sid) => _rpc(sid, 'spotty', 'set_mode', {'mode': mode}));
   }
 
   // -- Подписка и узлы (vpnsub) ---------------------------------------------
@@ -1182,12 +1269,14 @@ abstract class _TabState<T extends StatefulWidget> extends State<T> {
 /// модули показываются приглушённо с пометкой «скоро» (нет метода на роутере).
 const _moduleDefs = [
   {'id': 'internet', 'name': 'Интернет и VPN', 'icon': Icons.public_rounded, 'api': true},
+  {'id': 'mode', 'name': 'Прямой / VPN', 'icon': Icons.swap_horiz_rounded, 'api': true},
   {'id': 'diag', 'name': 'Диагностика', 'icon': Icons.troubleshoot_rounded, 'api': true},
   {'id': 'cellular', 'name': 'Сотовая сеть', 'icon': Icons.signal_cellular_alt_rounded, 'api': true},
-  {'id': 'devices', 'name': 'Устройства', 'icon': Icons.devices_rounded, 'api': false},
+  {'id': 'devices', 'name': 'Устройства', 'icon': Icons.devices_rounded, 'api': true},
   {'id': 'wifi', 'name': 'Wi-Fi', 'icon': Icons.wifi_rounded, 'api': true},
+  {'id': 'guest', 'name': 'Гостевой Wi-Fi', 'icon': Icons.qr_code_2_rounded, 'api': true},
   {'id': 'maint', 'name': 'Обслуживание', 'icon': Icons.build_circle_rounded, 'api': true},
-  {'id': 'log', 'name': 'Журнал событий', 'icon': Icons.history_rounded, 'api': false},
+  {'id': 'log', 'name': 'Журнал событий', 'icon': Icons.history_rounded, 'api': true},
 ];
 
 class HomeTab extends StatefulWidget {
@@ -1568,6 +1657,18 @@ class _ToolsTabState extends State<ToolsTab> {
         break;
       case 'maint':
         Navigator.of(context).push(MaterialPageRoute(builder: (_) => MaintenanceScreen(client: widget.client)));
+        break;
+      case 'devices':
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => DevicesScreen(client: widget.client)));
+        break;
+      case 'guest':
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => GuestWifiScreen(client: widget.client)));
+        break;
+      case 'log':
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => EventsScreen(client: widget.client)));
+        break;
+      case 'mode':
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => ModeScreen(client: widget.client)));
         break;
     }
   }
