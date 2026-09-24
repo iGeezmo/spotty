@@ -10,3 +10,8 @@ android/gradle/
 *.iml
 .idea/
 .metadata
+*.jks
+*.keystore
+key.properties
+local.properties
+tool/dist/

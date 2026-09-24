@@ -1,17 +1,44 @@
-# huasifei_remote
+# Spotty by 0dai
 
-A new Flutter project.
+Flutter-приложение для управления туристическим роутером Huasifei WH3000
+(OpenWrt) через его собственный ubus JSON-RPC API — статус VPN/сотовой связи,
+диагностика сети, выбор узла подписки, перезапуск туннеля/модема, перезагрузка
+роутера. Имя под иконкой — «Spotty».
 
-## Getting Started
+## Установка
 
-This project is a starting point for a Flutter application.
+APK ставится вручную (Google Play не используется):
 
-A few resources to get you started if this is your first Flutter project:
+1. Скачайте последний `spotty-X.Y.Z.apk` со страницы
+   [Releases](https://github.com/iGeezmo/spotty/releases/latest).
+2. Разрешите установку из этого источника при первом запросе Android.
+3. Установите. При первом запуске укажите адрес роутера (обычно
+   `192.168.5.1`) и пароль учётки `app`.
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Как устроены обновления
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Приложение при запуске и раз в 6 часов тихо проверяет
+`https://github.com/iGeezmo/spotty/releases/latest/download/version.json`
+(поля `version_code`, `version_name`, `url`, `sha256`, `notes`). Если найдена
+версия новее установленной — показывается баннер в приложении и системное
+уведомление. Обновление скачивается с проверкой sha256 (несовпадение —
+отказ) и ставится через системный установщик Android
+(`REQUEST_INSTALL_PACKAGES` + `FileProvider`). Без сети проверка проходит
+тихо, без ошибок пользователю. Текущая версия и ручная кнопка «Проверить
+обновления» — во вкладке «Настройки».
+
+`applicationId` (`com.opsoc.huasifei.huasifei_remote`) не меняется между
+версиями — это то, что позволяет Android ставить обновление поверх старой
+версии, а не рядом с ней.
+
+## Релиз новой версии
+
+```
+tool/release.sh X.Y.Z
+```
+
+Поднимает build number в `pubspec.yaml`, собирает подписанный release APK
+(текущий ключ — `~/.android/debug.keystore`, тот же на все версии — иначе
+Android откажется ставить обновление поверх старой), проверяет подпись
+(`apksigner verify` + совпадение сертификата с прошлым релизом), формирует
+`version.json` и публикует релиз `vX.Y.Z` на GitHub.
