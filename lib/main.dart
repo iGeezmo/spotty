@@ -517,8 +517,8 @@ class RouterClient {
       throw RouterUnreachableError();
     }
     final code = result[0] as int;
-    // ubus status codes: 0=OK, 3=INVALID_ARGUMENT, 6=ACCESS_DENIED,
-    // 8=METHOD_NOT_FOUND. 3/8 на методе, разрешённом ACL, значит rpcd не
+    // ubus status codes: 0=OK, 3=METHOD_NOT_FOUND, 6=PERMISSION_DENIED,
+    // 8=NOT_SUPPORTED. 3/8 на методе, разрешённом ACL, значит rpcd не
     // реализует его (или не перечитал плагин после деплоя) — это не "нет
     // связи" и не "запрещено", это отдельная, видимая пользователю причина.
     if (code == 6) {
