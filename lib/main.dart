@@ -703,6 +703,18 @@ Map<String, dynamic>? radioData(Map<String, dynamic>? diag) {
   return (layer?['data'] as Map<String, dynamic>?)?['radio'] as Map<String, dynamic>?;
 }
 
+/// Любой слой diag_status() по id: 1=Сотовая сеть, 2=Канал до оператора,
+/// 3=Интернет напрямую, 4=Белый список, 5=VPN, 6=Закрытые сайты,
+/// 7=Устройства.
+Map<String, dynamic>? diagLayerById(Map<String, dynamic>? diag, int id) {
+  final layers = (diag?['layers'] as List?) ?? const [];
+  for (final l in layers) {
+    final m = l as Map<String, dynamic>;
+    if (m['id'] == id) return m;
+  }
+  return null;
+}
+
 String signalBucketLabel(num? rsrpDbm) {
   if (rsrpDbm == null) return 'нет данных';
   if (rsrpDbm > -90) return 'Хорошо';
@@ -1431,9 +1443,15 @@ class _HomeTabState extends _TabState<HomeTab> {
       final m = n as Map<String, dynamic>;
       if (m['id'] == currentId) currentNode = m;
     }
+    // list_nodes.current — id пробуемого кандидата из списка узлов; на
+    // подписке без мульти-нодового пробинга список пуст и current=="none",
+    // а реальный подключённый узел и его выход живут в get_status().manifest
+    // (node/vpn_egress_ipv4). Раньше читали только list_nodes → "🏳️ · none".
+    final manifest = _subs?['manifest'] as Map<String, dynamic>?;
+    final manifestNode = manifest?['node'] as String?;
     final loc = currentNode?['loc'] as String?;
-    final flag = flagFromLoc(loc);
-    final nodeShort = currentId ?? '—';
+    final flag = loc != null ? flagFromLoc(loc) : (manifestNode != null ? '🌐' : '🏳️');
+    final nodeShort = currentNode != null ? currentId! : (manifestNode ?? currentId ?? '—');
     final medianMs = (currentNode?['median_ms'] as int?);
     final verdict = _diag?['verdict'] as Map<String, dynamic>?;
     final verdictState = verdict?['state'] as String? ?? 'unknown';
@@ -1876,6 +1894,7 @@ class _VpnTabState extends _TabState<VpnTab> {
   Timer? _timer;
   Map<String, dynamic>? _status;
   Map<String, dynamic>? _nodes;
+  Map<String, dynamic>? _subs;
 
   @override
   void initState() {
@@ -1897,10 +1916,15 @@ class _VpnTabState extends _TabState<VpnTab> {
       try {
         n = await widget.client.listNodes();
       } catch (_) {}
+      Map<String, dynamic>? subs;
+      try {
+        subs = await widget.client.vpnStatus();
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _status = s;
         _nodes = n;
+        _subs = subs;
       });
     });
   }
@@ -1909,7 +1933,10 @@ class _VpnTabState extends _TabState<VpnTab> {
   Widget build(BuildContext context) {
     final tunnel = _status?['tunnel'] as Map<String, dynamic>?;
     final ready = tunnel?['ready'] == true;
-    final egress = tunnel?['external_address'] as String?;
+    final manifest = _subs?['manifest'] as Map<String, dynamic>?;
+    // tunnel.external_address не наблюдался заполненным на живом роутере —
+    // реальный выход VPN живёт в get_status().manifest.vpn_egress_ipv4.
+    final egress = (tunnel?['external_address'] as String?) ?? (manifest?['vpn_egress_ipv4'] as String?);
     final updatedAt = tunnel?['updated_at'] as int?;
     final validUntil = tunnel?['valid_until'] as int?;
     final nowS = DateTime.now().millisecondsSinceEpoch ~/ 1000;
@@ -1922,11 +1949,14 @@ class _VpnTabState extends _TabState<VpnTab> {
       ageText = age < 0 ? '0 с' : '$age с';
     }
     final nodes = ((_nodes?['nodes'] as List?) ?? const []).cast<Map<String, dynamic>>();
-    final currentId = _nodes?['current'] as String?;
+    final listCurrentId = _nodes?['current'] as String?;
     Map<String, dynamic>? currentNode;
     for (final n in nodes) {
-      if (n['id'] == currentId) currentNode = n;
+      if (n['id'] == listCurrentId) currentNode = n;
     }
+    // Тот же разрыв, что на главной: список кандидатов пуст → id из
+    // manifest.node, а не из list_nodes.current ("none").
+    final currentId = currentNode != null ? listCurrentId : (manifest?['node'] as String? ?? listCurrentId);
     final sorted = [...nodes]..sort((a, b) {
         if (a['id'] == currentId) return -1;
         if (b['id'] == currentId) return 1;
@@ -2102,10 +2132,22 @@ class _CellularTabState extends _TabState<CellularTab> {
     final layer = cellularLayer(_diag);
     final layerState = layer?['state'] as String?;
     final dbm = radio?['rsrp_dbm'] as int?;
-    final rsrq = radio?['rsrq_db'] as int?;
+    // rsrq_db приходит от роутера дробным (например -7.5) — `as int?` падал
+    // на живых данных (TypeError, весь экран рендерился серым).
+    final rsrq = (radio?['rsrq_db'] as num?)?.toDouble();
     final sinr = radio?['sinr_raw'] as int?;
     final band = radio?['band'] as String?;
     final rat = radio?['rat'] as String?;
+    final cellData = layer?['data'] as Map<String, dynamic>?;
+    final cellOperator = cellData?['operator'] as String?;
+    final plmn = cellData?['plmn'] as String?;
+    final channelLayer = diagLayerById(_diag, 2);
+    final channelData = channelLayer?['data'] as Map<String, dynamic>?;
+    final channelIp = channelData?['ip'] as String?;
+    final channelDns = channelData?['dns'] as String?;
+    final channelDnsOk = channelData?['dns_ok'] as bool?;
+    final pingMs = channelData?['ping_rtt_ms'];
+    final pingLoss = channelData?['ping_loss_pct'];
 
     final rsrpSeries = _seriesOf(_historyPoints, 'rsrp');
     final pingSeries = _seriesOf(_historyPoints, 'ping_ms');
@@ -2149,7 +2191,7 @@ class _CellularTabState extends _TabState<CellularTab> {
         spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const CapsLabel(icon: Icons.compare_arrows_rounded, text: 'RSRQ'),
           const SizedBox(height: 8),
-          Text(rsrq == null ? 'нет данных' : '$rsrq дБ',
+          Text(rsrq == null ? 'нет данных' : '${rsrq.toStringAsFixed(1)} дБ',
               style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 22)),
         ])),
         const SizedBox(height: 10),
@@ -2158,6 +2200,26 @@ class _CellularTabState extends _TabState<CellularTab> {
           const SizedBox(height: 8),
           Text(sinr == null ? 'нет данных' : '$sinr дБ',
               style: const TextStyle(fontFamily: _mono, fontWeight: FontWeight.w800, fontSize: 22)),
+        ])),
+        const SizedBox(height: 10),
+        spottyCard(context, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const CapsLabel(icon: Icons.cell_tower_rounded, text: 'Оператор и канал'),
+          const SizedBox(height: 8),
+          Text('Оператор: ${cellOperator ?? 'нет данных'}${plmn != null ? ' ($plmn)' : ''}',
+              style: const TextStyle(fontSize: 13)),
+          const SizedBox(height: 4),
+          Text('IP (канал до оператора): ${channelIp ?? 'нет данных'}',
+              style: const TextStyle(fontFamily: _mono, fontSize: 13)),
+          const SizedBox(height: 4),
+          Text('DNS: ${channelDns ?? 'нет данных'}${channelDnsOk == false ? ' (не отвечает)' : ''}',
+              style: const TextStyle(fontFamily: _mono, fontSize: 13)),
+          const SizedBox(height: 4),
+          Text(
+              pingMs == null
+                  ? 'Пинг: нет данных'
+                  : 'Пинг: ${pingMs is int ? pingMs : (pingMs as num).toStringAsFixed(0)} мс'
+                      '${pingLoss != null ? ' · потери $pingLoss%' : ''}',
+              style: const TextStyle(fontSize: 13)),
         ])),
         const SizedBox(height: 10),
         _historyCard(context, 'RSRP · история', rsrpSeries, const Color(0xFF00D9B4)),
