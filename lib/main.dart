@@ -317,6 +317,15 @@ class RouterForbiddenError implements Exception {
   RouterForbiddenError(this.message);
 }
 
+/// ubus-объект/метод существует в ACL, но rpcd не отдаёт для него сигнатуру
+/// (ubus code 3/8, или JSON-RPC error -32000 "Object not found") — т.е. это
+/// НЕ проблема пароля/ACL/сети, а рассинхрон бэкенда на роутере. Показываем
+/// явно, а не тихо глотаем как "нет данных".
+class RouterMethodUnavailableError implements Exception {
+  final String message;
+  RouterMethodUnavailableError(this.message);
+}
+
 class RouterClient {
   final String host;
   final String user;
@@ -483,6 +492,24 @@ class RouterClient {
     }
     final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
     if (decoded.containsKey('error')) {
+      // uhttpd-mod-ubus проверяет сессию/ACL ДО диспетчеризации и на отказе
+      // отвечает JSON-RPC верхнеуровневым `error`, а не `result:[6,...]` —
+      // измерено на живом роутере 2026-09-25. -32002 = "Access denied"
+      // (сессия истекла или отозвана) — это и есть путь для повторного
+      // логина в _withSession, раньше он был мёртвым кодом, потому что сюда
+      // всё падало как RouterUnreachableError ("нет связи"), хотя роутер
+      // был доступен. -32000 = "Object not found" — метод/объект не
+      // зарегистрирован в rpcd, хотя разрешён в ACL (рассинхрон бэкенда).
+      final err = decoded['error'] as Map<String, dynamic>?;
+      final errCode = err?['code'] as int?;
+      final errMsg = err?['message'] as String?;
+      if (errCode == -32002) {
+        throw RouterForbiddenError(errMsg ?? 'Сессия истекла');
+      }
+      if (errCode == -32000) {
+        throw RouterMethodUnavailableError(
+            'Метод не найден на роутере (rpcd): $object.$method');
+      }
       throw RouterUnreachableError();
     }
     final result = decoded['result'] as List<dynamic>?;
@@ -490,9 +517,16 @@ class RouterClient {
       throw RouterUnreachableError();
     }
     final code = result[0] as int;
-    // ubus status codes: 0=OK, 6=ACCESS_DENIED, 5=NOT_FOUND ...
+    // ubus status codes: 0=OK, 3=INVALID_ARGUMENT, 6=ACCESS_DENIED,
+    // 8=METHOD_NOT_FOUND. 3/8 на методе, разрешённом ACL, значит rpcd не
+    // реализует его (или не перечитал плагин после деплоя) — это не "нет
+    // связи" и не "запрещено", это отдельная, видимая пользователю причина.
     if (code == 6) {
       throw RouterForbiddenError('Действие не разрешено роутером');
+    }
+    if (code == 3 || code == 8) {
+      throw RouterMethodUnavailableError(
+          'Метод $object.$method не поддерживается роутером (код $code)');
     }
     if (code != 0) {
       throw RouterUnreachableError();
@@ -1320,27 +1354,53 @@ class _HomeTabState extends _TabState<HomeTab> {
     super.dispose();
   }
 
+  // Причины, по которым секции ниже пустые — раньше глотались молча
+  // (catch (_) {}), из-за чего диагностика/узлы/подписки выглядели как
+  // "нет данных", хотя на деле метод не отвечает на роутере. Теперь видимо.
+  String? _diagIssue;
+  String? _nodesIssue;
+  String? _subsIssue;
+
+  String _sectionIssueText(Object e) {
+    if (e is RouterMethodUnavailableError) return e.message;
+    if (e is RouterForbiddenError) return e.message;
+    if (e is RouterUnreachableError) return 'Нет связи с роутером.';
+    return 'Ошибка: $e';
+  }
+
   Future<void> _refresh() async {
     try {
       final s = await widget.client.status();
       Map<String, dynamic>? d;
       Map<String, dynamic>? n;
       Map<String, dynamic>? subs;
+      String? diagIssue;
+      String? nodesIssue;
+      String? subsIssue;
       try {
         d = await widget.client.diagStatus();
-      } catch (_) {}
+      } catch (e) {
+        diagIssue = _sectionIssueText(e);
+      }
       try {
         n = await widget.client.listNodes();
-      } catch (_) {}
+      } catch (e) {
+        nodesIssue = _sectionIssueText(e);
+      }
       try {
         subs = await widget.client.vpnStatus();
-      } catch (_) {}
+      } catch (e) {
+        subsIssue = _sectionIssueText(e);
+      }
       if (!mounted) return;
       setState(() {
         _status = s;
         _diag = d;
         _nodes = n;
         _subs = subs;
+        _diagIssue = diagIssue;
+        _nodesIssue = nodesIssue;
+        _subsIssue = subsIssue;
         error = null;
       });
     } on RouterAuthError {
@@ -1377,7 +1437,7 @@ class _HomeTabState extends _TabState<HomeTab> {
     final medianMs = (currentNode?['median_ms'] as int?);
     final verdict = _diag?['verdict'] as Map<String, dynamic>?;
     final verdictState = verdict?['state'] as String? ?? 'unknown';
-    final verdictText = verdict?['text'] as String? ?? 'нет данных диагностики';
+    final verdictText = verdict?['text'] as String? ?? (_diagIssue ?? 'нет данных диагностики');
     final subsList = ((_subs?['subs'] as List?) ?? const []).cast<Map<String, dynamic>>();
     final aliveCount = subsList.where((s) => s['result'] == 'ok').length;
     final radio = radioData(_diag);
@@ -1403,6 +1463,25 @@ class _HomeTabState extends _TabState<HomeTab> {
               ),
             ),
           errorBanner(),
+          if (error == null && (_nodesIssue != null || _subsIssue != null))
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Card(
+                color: Colors.orange.shade900,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (_nodesIssue != null)
+                        Text('Узлы: $_nodesIssue', style: const TextStyle(color: Colors.white)),
+                      if (_subsIssue != null)
+                        Text('Подписка: $_subsIssue', style: const TextStyle(color: Colors.white)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
