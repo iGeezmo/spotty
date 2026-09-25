@@ -1,0 +1,33 @@
+{
+  "cellular": {
+    "up": true,
+    "uptime": 29209,
+    "device": "eth2",
+    "modem": "FM350",
+    "rx_bytes": 5827175668,
+    "tx_bytes": 1340896218
+  },
+  "tunnel": {
+    "ready": false,
+    "process": false,
+    "default_route": false,
+    "kill_switch_gate": false,
+    "external_address": null,
+    "requested_mode": "vpn",
+    "effective_mode": "none",
+    "phase": "unverified",
+    "reason": "VPN_BACKEND_UNAVAILABLE",
+    "direct_verified": false,
+    "vpn_verified": false
+  },
+  "wifi": {
+    "ssid": "HUASIFEI",
+    "radios_up": 2,
+    "clients": 0,
+    "wps": false
+  },
+  "system": {
+    "board": "Huasifei WH3000 Pro eMMC",
+    "release": "OpenWrt 25.12.5 r33051-f5dae5ece4"
+  }
+}

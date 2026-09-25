@@ -1,0 +1,34 @@
+{
+  "schema": "opscx.vpnsub-status/2",
+  "interval_min": 30,
+  "selected": "auto",
+  "current": "none",
+  "decision": {
+    "ts": 1790305382,
+    "decision": "keep:no_live_candidate",
+    "selected": "auto",
+    "current": "none"
+  },
+  "notice": "",
+  "manifest": {
+    "schema": "opscx.vpnsub-material-manifest/1",
+    "material_schema": "opscx.connectivity-material/3",
+    "generation": "vpnsub-0cc19579d5c0",
+    "node": "d4a2a5909c56",
+    "vpn_egress_ipv4": "203.0.113.7",
+    "ts": 1790305483
+  },
+  "subs": [
+    {
+      "id": "s_bf426a81566a",
+      "label": "Anti-Block LTE",
+      "priority": 1,
+      "material": false,
+      "result": "ok",
+      "ts": 1790305263,
+      "last_ok": 1790305382,
+      "error": "",
+      "url_sha12": "bf426a81566a"
+    }
+  ]
+}

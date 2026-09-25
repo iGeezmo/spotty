@@ -57,6 +57,13 @@ class DevicesScreen extends StatefulWidget {
 
 class _DevicesScreenState extends State<DevicesScreen> {
   Map<String, dynamic>? _data;
+  // ubus object "spotty" (per-device list) не установлен на большинстве
+  // роутеров (design.md, ещё не задеплоен) — вызов падает Object not found.
+  // diag_status() слой 7 "Устройства" всегда считает количество независимо
+  // от этого объекта, так что счётчик не должен зависеть от отсутствующего
+  // бэкенда, даже когда детальный список недоступен.
+  int? _diagDeviceCount;
+  bool _spottyUnavailable = false;
   bool _loading = true;
 
   @override
@@ -67,34 +74,55 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
   Future<void> _refresh() async {
     setState(() => _loading = true);
+    Map<String, dynamic>? data;
+    bool spottyFailed = false;
     try {
-      final d = await widget.client.toolboxDevices();
-      if (!mounted) return;
-      setState(() {
-        _data = d;
-        _loading = false;
-      });
+      data = await widget.client.toolboxDevices();
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      spottyFailed = true;
     }
+    int? diagCount;
+    try {
+      final diag = await widget.client.diagStatus();
+      final layer = diagLayerById(diag, 7);
+      final raw = (layer?['data'] as Map<String, dynamic>?)?['devices'];
+      if (raw is int) diagCount = raw;
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _data = data;
+      _diagDeviceCount = diagCount;
+      _spottyUnavailable = spottyFailed;
+      _loading = false;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final devices = (_data?['devices'] as List?) ?? const [];
+    final count = devices.isNotEmpty ? devices.length : (_diagDeviceCount ?? devices.length);
     return Scaffold(
       appBar: AppBar(title: const Text('Устройства')),
       body: RefreshIndicator(
         onRefresh: _refresh,
-        child: _loading && devices.isEmpty
+        child: _loading && devices.isEmpty && _diagDeviceCount == null
             ? const Center(child: CircularProgressIndicator())
             : ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  Text('${devices.length} устройств в сети',
+                  Text('$count устройств в сети',
                       style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5), fontSize: 12)),
                   const SizedBox(height: 10),
                   for (final raw in devices) _deviceCard(context, raw as Map<String, dynamic>),
+                  if (devices.isEmpty && _spottyUnavailable && _diagDeviceCount != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        'Список устройств недоступен: бэкенд ubus "spotty" не установлен '
+                        'на этом роутере. Счётчик выше — из диагностики (слой «Устройства»).',
+                        style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5), fontSize: 12),
+                      ),
+                    ),
                   const SizedBox(height: 8),
                   Text(
                     'Трафик по Wi-Fi — от точки доступа (накопительно с подключения). '

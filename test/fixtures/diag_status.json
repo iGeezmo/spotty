@@ -1,0 +1,240 @@
+{
+  "schema": "opscx.diag/1",
+  "ts": 1790305200,
+  "duration_s": 10,
+  "interval_min": 10,
+  "verdict": {
+    "state": "warn",
+    "text": "Работает, есть замечание — VPN: подтверждён; сбоев пробы за час: 19 из 182 (10%)"
+  },
+  "client_path": "vpn",
+  "whitelist": "inactive",
+  "layers": [
+    {
+      "id": 1,
+      "name": "Сотовая сеть",
+      "state": "ok",
+      "reason": "на связи · LTE B7 (по EARFCN) · RSRP -91 дБм (средне) · RSRQ -7.5 дБ",
+      "data": {
+        "up": true,
+        "uptime_s": 28826,
+        "modem": "FM350",
+        "operator": "",
+        "plmn": "",
+        "radio": {
+          "ts": 1790305177,
+          "ok": true,
+          "source": "AT+GTCCINFO?",
+          "rat": "LTE",
+          "band": null,
+          "band_raw": 0,
+          "earfcn": 2850,
+          "pci": 24,
+          "rsrp_dbm": -91,
+          "rsrq_db": -7.5,
+          "sinr_raw": 18,
+          "rsrp_raw": 50,
+          "rsrq_raw": 24
+        },
+        "radio_age_s": 23,
+        "radio_reason": ""
+      },
+      "hint": "сигнал из воркера FM350 (AT+GTCCINFO?, не чаще раза в 30 с); пороги RSRP (LTE): > -90 дБм хорошо, -90…-105 средне, < -105 плохо; RSRQ = индекс/2 − 19.5 дБ; SINR показан сырым значением модема — шкала FM350 не подтверждена"
+    },
+    {
+      "id": 2,
+      "name": "Канал до оператора",
+      "state": "ok",
+      "reason": "IP есть, DNS оператора отвечает",
+      "data": {
+        "ip": "10.244.195.136",
+        "default_route": true,
+        "dns": "10.97.52.77",
+        "dns_ok": true,
+        "ping_loss_pct": 0,
+        "ping_rtt_ms": 57
+      }
+    },
+    {
+      "id": 3,
+      "name": "Интернет напрямую",
+      "state": "ok",
+      "reason": "обычные сайты открываются (3/3)",
+      "data": {
+        "ok": 3,
+        "total": 3
+      }
+    },
+    {
+      "id": 4,
+      "name": "Белый список оператора",
+      "state": "ok",
+      "reason": "нет: обычные сайты открываются (3/3)",
+      "data": {
+        "whitelist_ok": 4,
+        "whitelist_total": 4,
+        "neutral_ok": 3,
+        "neutral_total": 3
+      }
+    },
+    {
+      "id": 5,
+      "name": "VPN",
+      "state": "warn",
+      "reason": "подтверждён; сбоев пробы за час: 19 из 182 (10%)",
+      "data": {
+        "requested": "vpn",
+        "effective": "vpn",
+        "verified": true,
+        "egress": "203.0.113.7",
+        "proof_age_s": 26,
+        "probe_fail_1h": 19,
+        "probe_attempts_1h": 182,
+        "probe_fail_pct": 10
+      },
+      "hint": "сбои пробы за час: меньше 3% — норма, 3–15% — внимание, больше 15% — плохо (uci opscx_diag.main.vpn_warn_pct / vpn_bad_pct)"
+    },
+    {
+      "id": 6,
+      "name": "Закрытые сайты",
+      "state": "ok",
+      "reason": "открываются 6/6",
+      "data": {
+        "ok": 6,
+        "total": 6,
+        "path": "vpn"
+      }
+    },
+    {
+      "id": 7,
+      "name": "Устройства",
+      "state": "ok",
+      "reason": "устройств в сети: 4 (по Wi-Fi: 0); трафик идёт через VPN",
+      "data": {
+        "wifi": 0,
+        "devices": 4,
+        "path": "vpn"
+      },
+      "hint": "устройства = уникальные MAC: соседи br-lan в живом состоянии + активные DHCP-аренды + клиенты всех Wi-Fi-радио, без самого роутера"
+    }
+  ],
+  "targets": [
+    {
+      "group": "neutral",
+      "host": "wikipedia.org",
+      "path": "direct",
+      "ok": true,
+      "code": 301,
+      "ms": 442,
+      "stage": "ok"
+    },
+    {
+      "group": "neutral",
+      "host": "github.com",
+      "path": "direct",
+      "ok": true,
+      "code": 200,
+      "ms": 978,
+      "stage": "ok"
+    },
+    {
+      "group": "blocked",
+      "host": "chatgpt.com",
+      "path": "vpn",
+      "ok": true,
+      "code": 403,
+      "ms": 593,
+      "stage": "ok"
+    },
+    {
+      "group": "blocked",
+      "host": "telegram.org",
+      "path": "vpn",
+      "ok": true,
+      "code": 200,
+      "ms": 625,
+      "stage": "ok"
+    },
+    {
+      "group": "blocked",
+      "host": "linkedin.com",
+      "path": "vpn",
+      "ok": true,
+      "code": 200,
+      "ms": 572,
+      "stage": "ok"
+    },
+    {
+      "group": "neutral",
+      "host": "debian.org",
+      "path": "direct",
+      "ok": true,
+      "code": 302,
+      "ms": 278,
+      "stage": "ok"
+    },
+    {
+      "group": "whitelist",
+      "host": "ya.ru",
+      "path": "direct",
+      "ok": true,
+      "code": 302,
+      "ms": 196,
+      "stage": "ok"
+    },
+    {
+      "group": "whitelist",
+      "host": "gosuslugi.ru",
+      "path": "direct",
+      "ok": true,
+      "code": 200,
+      "ms": 146,
+      "stage": "ok"
+    },
+    {
+      "group": "whitelist",
+      "host": "vk.com",
+      "path": "direct",
+      "ok": true,
+      "code": 302,
+      "ms": 232,
+      "stage": "ok"
+    },
+    {
+      "group": "whitelist",
+      "host": "mail.ru",
+      "path": "direct",
+      "ok": true,
+      "code": 302,
+      "ms": 334,
+      "stage": "ok"
+    },
+    {
+      "group": "blocked",
+      "host": "youtube.com",
+      "path": "vpn",
+      "ok": true,
+      "code": 301,
+      "ms": 886,
+      "stage": "ok"
+    },
+    {
+      "group": "blocked",
+      "host": "instagram.com",
+      "path": "vpn",
+      "ok": true,
+      "code": 301,
+      "ms": 676,
+      "stage": "ok"
+    },
+    {
+      "group": "blocked",
+      "host": "x.com",
+      "path": "vpn",
+      "ok": true,
+      "code": 200,
+      "ms": 868,
+      "stage": "ok"
+    }
+  ]
+}
