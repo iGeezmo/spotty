@@ -31,6 +31,8 @@ import 'package:open_filex/open_filex.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'toolbox/screens.dart';
+
 void main() {
   runApp(const HuasifeiApp());
 }
@@ -315,6 +317,15 @@ class RouterForbiddenError implements Exception {
   RouterForbiddenError(this.message);
 }
 
+/// ubus-объект/метод существует в ACL, но rpcd не отдаёт для него сигнатуру
+/// (ubus code 3/8, или JSON-RPC error -32000 "Object not found") — т.е. это
+/// НЕ проблема пароля/ACL/сети, а рассинхрон бэкенда на роутере. Показываем
+/// явно, а не тихо глотаем как "нет данных".
+class RouterMethodUnavailableError implements Exception {
+  final String message;
+  RouterMethodUnavailableError(this.message);
+}
+
 class RouterClient {
   final String host;
   final String user;
@@ -410,6 +421,48 @@ class RouterClient {
     if (object == 'opscx' && (method == 'action' || method == 'select_node' || method == 'refresh_now' || method == 'set_subscription' || method == 'set_interval')) {
       return {};
     }
+    if (object == 'spotty' && method == 'devices') {
+      return {
+        'schema': 'spotty.devices/1',
+        'updated_at': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        'devices': [
+          {'mac_masked': '10:16:b1:**:**:f7', 'ip': '192.168.5.242', 'hostname': 'OPPO-Find-N6', 'link': 'wifi', 'band': '5g', 'signal_dbm': -70, 'rx_bytes': 3175845, 'tx_bytes': 9146639, 'source': 'hostapd'},
+          {'mac_masked': 'c6:25:c1:**:**:5e', 'ip': '192.168.5.170', 'hostname': 'OWWE261', 'link': 'wifi', 'band': '5g', 'signal_dbm': -58, 'rx_bytes': 842112, 'tx_bytes': 190044, 'source': 'hostapd'},
+          {'mac_masked': 'a4:83:e7:**:**:01', 'ip': '192.168.5.88', 'hostname': null, 'link': 'lan', 'band': null, 'signal_dbm': null, 'rx_bytes': 55210, 'tx_bytes': 0, 'source': 'conntrack'},
+        ],
+        'stale': false,
+      };
+    }
+    if (object == 'spotty' && method == 'guest_status') {
+      return {'schema': 'spotty.guest/1', 'supported': true, 'enabled': false, 'ssid': 'Huasifei-Guest', 'configured': true};
+    }
+    if (object == 'spotty' && method == 'guest_set') {
+      return {'accepted': true, 'enabled': params['enabled'], 'error': null};
+    }
+    if (object == 'spotty' && method == 'guest_qr') {
+      return {'accepted': true, 'ssid': 'Huasifei-Guest', 'qr': 'WIFI:T:WPA;S:Huasifei-Guest;P:mockmockmock01;;', 'error': null};
+    }
+    if (object == 'spotty' && method == 'guest_rotate') {
+      return {'accepted': true, 'error': null};
+    }
+    if (object == 'spotty' && method == 'events') {
+      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      return {
+        'schema': 'spotty.events/1',
+        'updated_at': now,
+        'events': [
+          {'ts': now - 4, 'tag': 'mode', 'text': 'LED_TICK vpn'},
+          {'ts': now - 40, 'tag': 'cellular', 'text': 'FM350_TICK ready'},
+          {'ts': now - 95, 'tag': 'hold', 'text': 'WORKER_HOLD VPN_UNVERIFIED'},
+          {'ts': now - 200, 'tag': 'worker', 'text': 'WORKER_TICK vpn healthy'},
+          {'ts': now - 610, 'tag': 'diag', 'text': 'opscx-diag: 6/7 слоёв ok'},
+        ],
+        'stale': false,
+      };
+    }
+    if (object == 'spotty' && method == 'set_mode') {
+      return {'accepted': true, 'requested_mode': params['mode'], 'error': null};
+    }
     return {};
   }
 
@@ -439,6 +492,24 @@ class RouterClient {
     }
     final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
     if (decoded.containsKey('error')) {
+      // uhttpd-mod-ubus проверяет сессию/ACL ДО диспетчеризации и на отказе
+      // отвечает JSON-RPC верхнеуровневым `error`, а не `result:[6,...]` —
+      // измерено на живом роутере 2026-09-25. -32002 = "Access denied"
+      // (сессия истекла или отозвана) — это и есть путь для повторного
+      // логина в _withSession, раньше он был мёртвым кодом, потому что сюда
+      // всё падало как RouterUnreachableError ("нет связи"), хотя роутер
+      // был доступен. -32000 = "Object not found" — метод/объект не
+      // зарегистрирован в rpcd, хотя разрешён в ACL (рассинхрон бэкенда).
+      final err = decoded['error'] as Map<String, dynamic>?;
+      final errCode = err?['code'] as int?;
+      final errMsg = err?['message'] as String?;
+      if (errCode == -32002) {
+        throw RouterForbiddenError(errMsg ?? 'Сессия истекла');
+      }
+      if (errCode == -32000) {
+        throw RouterMethodUnavailableError(
+            'Метод не найден на роутере (rpcd): $object.$method');
+      }
       throw RouterUnreachableError();
     }
     final result = decoded['result'] as List<dynamic>?;
@@ -446,9 +517,16 @@ class RouterClient {
       throw RouterUnreachableError();
     }
     final code = result[0] as int;
-    // ubus status codes: 0=OK, 6=ACCESS_DENIED, 5=NOT_FOUND ...
+    // ubus status codes: 0=OK, 3=METHOD_NOT_FOUND, 6=PERMISSION_DENIED,
+    // 8=NOT_SUPPORTED. 3/8 на методе, разрешённом ACL, значит rpcd не
+    // реализует его (или не перечитал плагин после деплоя) — это не "нет
+    // связи" и не "запрещено", это отдельная, видимая пользователю причина.
     if (code == 6) {
       throw RouterForbiddenError('Действие не разрешено роутером');
+    }
+    if (code == 3 || code == 8) {
+      throw RouterMethodUnavailableError(
+          'Метод $object.$method не поддерживается роутером (код $code)');
     }
     if (code != 0) {
       throw RouterUnreachableError();
@@ -509,6 +587,49 @@ class RouterClient {
   /// Запускает полный прогон диагностики на роутере (фоново).
   Future<Map<String, dynamic>> diagRun() {
     return _withSession((sid) => _rpc(sid, 'opscx', 'diag_run', {}));
+  }
+
+  // -- Toolbox (rpcd object "spotty" — devices/guest wifi/events/mode) ------
+  // Отдельный ubus-объект от "opscx": design в
+  // .agent (см. ops-receipts/opscl-spotty-modules-20260924/router/design.md).
+  // Бэкенд ещё не установлен на роутер — используются только в mock-режиме
+  // до отдельного релиза после install-plan.
+
+  /// schema spotty.devices/1: {devices:[{mac_masked, ip, hostname, link, band, signal_dbm, rx_bytes, tx_bytes, source}]}
+  Future<Map<String, dynamic>> toolboxDevices() {
+    return _withSession((sid) => _rpc(sid, 'spotty', 'devices', {}));
+  }
+
+  /// schema spotty.guest/1: {supported, enabled, ssid, configured}
+  Future<Map<String, dynamic>> guestStatus() {
+    return _withSession((sid) => _rpc(sid, 'spotty', 'guest_status', {}));
+  }
+
+  Future<Map<String, dynamic>> guestSet(bool enabled) {
+    return _withSession(
+        (sid) => _rpc(sid, 'spotty', 'guest_set', {'enabled': enabled}));
+  }
+
+  /// Возвращает {ssid, qr} — qr уже содержит пароль в формате WIFI:T:WPA;...;;
+  /// (см. design.md: "только QR" значит без отдельного поля psk, а не без
+  /// раскрытия — сам QR обязан содержать пароль, иначе его нельзя отсканировать).
+  Future<Map<String, dynamic>> guestQr() {
+    return _withSession((sid) => _rpc(sid, 'spotty', 'guest_qr', {}));
+  }
+
+  Future<Map<String, dynamic>> guestRotate() {
+    return _withSession((sid) => _rpc(sid, 'spotty', 'guest_rotate', {}));
+  }
+
+  /// schema spotty.events/1: {events:[{ts, tag, text}]}
+  Future<Map<String, dynamic>> toolboxEvents({int lines = 100}) {
+    return _withSession(
+        (sid) => _rpc(sid, 'spotty', 'events', {'lines': lines}));
+  }
+
+  /// mode: "direct" | "vpn" — та же команда, что signal-control set_mode.
+  Future<Map<String, dynamic>> setMode(String mode) {
+    return _withSession((sid) => _rpc(sid, 'spotty', 'set_mode', {'mode': mode}));
   }
 
   // -- Подписка и узлы (vpnsub) ---------------------------------------------
@@ -1182,12 +1303,14 @@ abstract class _TabState<T extends StatefulWidget> extends State<T> {
 /// модули показываются приглушённо с пометкой «скоро» (нет метода на роутере).
 const _moduleDefs = [
   {'id': 'internet', 'name': 'Интернет и VPN', 'icon': Icons.public_rounded, 'api': true},
+  {'id': 'mode', 'name': 'Прямой / VPN', 'icon': Icons.swap_horiz_rounded, 'api': true},
   {'id': 'diag', 'name': 'Диагностика', 'icon': Icons.troubleshoot_rounded, 'api': true},
   {'id': 'cellular', 'name': 'Сотовая сеть', 'icon': Icons.signal_cellular_alt_rounded, 'api': true},
-  {'id': 'devices', 'name': 'Устройства', 'icon': Icons.devices_rounded, 'api': false},
+  {'id': 'devices', 'name': 'Устройства', 'icon': Icons.devices_rounded, 'api': true},
   {'id': 'wifi', 'name': 'Wi-Fi', 'icon': Icons.wifi_rounded, 'api': true},
+  {'id': 'guest', 'name': 'Гостевой Wi-Fi', 'icon': Icons.qr_code_2_rounded, 'api': true},
   {'id': 'maint', 'name': 'Обслуживание', 'icon': Icons.build_circle_rounded, 'api': true},
-  {'id': 'log', 'name': 'Журнал событий', 'icon': Icons.history_rounded, 'api': false},
+  {'id': 'log', 'name': 'Журнал событий', 'icon': Icons.history_rounded, 'api': true},
 ];
 
 class HomeTab extends StatefulWidget {
@@ -1231,27 +1354,53 @@ class _HomeTabState extends _TabState<HomeTab> {
     super.dispose();
   }
 
+  // Причины, по которым секции ниже пустые — раньше глотались молча
+  // (catch (_) {}), из-за чего диагностика/узлы/подписки выглядели как
+  // "нет данных", хотя на деле метод не отвечает на роутере. Теперь видимо.
+  String? _diagIssue;
+  String? _nodesIssue;
+  String? _subsIssue;
+
+  String _sectionIssueText(Object e) {
+    if (e is RouterMethodUnavailableError) return e.message;
+    if (e is RouterForbiddenError) return e.message;
+    if (e is RouterUnreachableError) return 'Нет связи с роутером.';
+    return 'Ошибка: $e';
+  }
+
   Future<void> _refresh() async {
     try {
       final s = await widget.client.status();
       Map<String, dynamic>? d;
       Map<String, dynamic>? n;
       Map<String, dynamic>? subs;
+      String? diagIssue;
+      String? nodesIssue;
+      String? subsIssue;
       try {
         d = await widget.client.diagStatus();
-      } catch (_) {}
+      } catch (e) {
+        diagIssue = _sectionIssueText(e);
+      }
       try {
         n = await widget.client.listNodes();
-      } catch (_) {}
+      } catch (e) {
+        nodesIssue = _sectionIssueText(e);
+      }
       try {
         subs = await widget.client.vpnStatus();
-      } catch (_) {}
+      } catch (e) {
+        subsIssue = _sectionIssueText(e);
+      }
       if (!mounted) return;
       setState(() {
         _status = s;
         _diag = d;
         _nodes = n;
         _subs = subs;
+        _diagIssue = diagIssue;
+        _nodesIssue = nodesIssue;
+        _subsIssue = subsIssue;
         error = null;
       });
     } on RouterAuthError {
@@ -1288,7 +1437,7 @@ class _HomeTabState extends _TabState<HomeTab> {
     final medianMs = (currentNode?['median_ms'] as int?);
     final verdict = _diag?['verdict'] as Map<String, dynamic>?;
     final verdictState = verdict?['state'] as String? ?? 'unknown';
-    final verdictText = verdict?['text'] as String? ?? 'нет данных диагностики';
+    final verdictText = verdict?['text'] as String? ?? (_diagIssue ?? 'нет данных диагностики');
     final subsList = ((_subs?['subs'] as List?) ?? const []).cast<Map<String, dynamic>>();
     final aliveCount = subsList.where((s) => s['result'] == 'ok').length;
     final radio = radioData(_diag);
@@ -1314,6 +1463,25 @@ class _HomeTabState extends _TabState<HomeTab> {
               ),
             ),
           errorBanner(),
+          if (error == null && (_nodesIssue != null || _subsIssue != null))
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Card(
+                color: Colors.orange.shade900,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (_nodesIssue != null)
+                        Text('Узлы: $_nodesIssue', style: const TextStyle(color: Colors.white)),
+                      if (_subsIssue != null)
+                        Text('Подписка: $_subsIssue', style: const TextStyle(color: Colors.white)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1568,6 +1736,18 @@ class _ToolsTabState extends State<ToolsTab> {
         break;
       case 'maint':
         Navigator.of(context).push(MaterialPageRoute(builder: (_) => MaintenanceScreen(client: widget.client)));
+        break;
+      case 'devices':
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => DevicesScreen(client: widget.client)));
+        break;
+      case 'guest':
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => GuestWifiScreen(client: widget.client)));
+        break;
+      case 'log':
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => EventsScreen(client: widget.client)));
+        break;
+      case 'mode':
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => ModeScreen(client: widget.client)));
         break;
     }
   }
