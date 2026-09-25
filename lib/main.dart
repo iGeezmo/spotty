@@ -106,19 +106,28 @@ class Credentials {
   );
 
   static const _kHost = 'router_host';
+  static const _kFallbackHost = 'router_host_fallback';
   static const _kUser = 'router_user';
   static const _kPass = 'router_pass';
 
   static Future<Map<String, String>?> load() async {
     final host = await _storage.read(key: _kHost);
+    final fallbackHost = await _storage.read(key: _kFallbackHost);
     final user = await _storage.read(key: _kUser);
     final pass = await _storage.read(key: _kPass);
     if (host == null || pass == null) return null;
-    return {'host': host, 'user': user ?? 'app', 'pass': pass};
+    return {
+      'host': host,
+      'fallbackHost': fallbackHost ?? '',
+      'user': user ?? 'app',
+      'pass': pass,
+    };
   }
 
-  static Future<void> save(String host, String user, String pass) async {
+  static Future<void> save(
+      String host, String fallbackHost, String user, String pass) async {
     await _storage.write(key: _kHost, value: host);
+    await _storage.write(key: _kFallbackHost, value: fallbackHost);
     await _storage.write(key: _kUser, value: user);
     await _storage.write(key: _kPass, value: pass);
   }
@@ -170,6 +179,7 @@ class _RootGateState extends State<RootGate> {
     }
     return MainShell(
       host: _creds!['host']!,
+      fallbackHost: _creds!['fallbackHost'] ?? '',
       user: _creds!['user']!,
       pass: _creds!['pass']!,
       onLogout: () async {
@@ -192,6 +202,12 @@ class SetupScreen extends StatefulWidget {
 class _SetupScreenState extends State<SetupScreen> {
   final _formKey = GlobalKey<FormState>();
   final _hostCtrl = TextEditingController(text: '192.168.5.1');
+  // MagicDNS-имя роутера в tailnet (см. ops-pack/02-tailnet-remote-access.md,
+  // hostname задаётся --hostname=huasifei-wh3000 при `tailscale up`).
+  // Не tailnet-IP: тот появляется только после регистрации узла и заранее
+  // неизвестен — имя стабильно с момента установки.
+  final _fallbackHostCtrl =
+      TextEditingController(text: 'huasifei-wh3000.tail97945d.ts.net');
   final _userCtrl = TextEditingController(text: 'app');
   final _passCtrl = TextEditingController();
   bool _checking = false;
@@ -218,11 +234,22 @@ class _SetupScreenState extends State<SetupScreen> {
                 TextFormField(
                   controller: _hostCtrl,
                   decoration: const InputDecoration(
-                    labelText: 'Адрес роутера (IP)',
+                    labelText: 'Адрес роутера (IP в его Wi-Fi, 192.168.5.1)',
                     border: OutlineInputBorder(),
                   ),
                   validator: (v) =>
                       (v == null || v.trim().isEmpty) ? 'Обязательное поле' : null,
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _fallbackHostCtrl,
+                  decoration: const InputDecoration(
+                    labelText:
+                        'Резервный адрес (tailnet, если не в Wi-Fi роутера)',
+                    helperText:
+                        'MagicDNS-имя или tailnet-IP. Пусто — резерва нет.',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
                 const SizedBox(height: 16),
                 TextFormField(
@@ -274,32 +301,65 @@ class _SetupScreenState extends State<SetupScreen> {
       _error = null;
     });
     final host = _hostCtrl.text.trim();
+    final fallbackHost = _fallbackHostCtrl.text.trim();
     final user = _userCtrl.text.trim().isEmpty ? 'app' : _userCtrl.text.trim();
     final pass = _passCtrl.text;
-    final client = RouterClient(host: host, user: user, pass: pass);
+
+    // Локальный адрес пробуем быстро (2 с) — если телефон не в сети
+    // роутера, ждать полный таймаут RouterClient (6 с) бессмысленно и
+    // раздражает при каждом запуске вне дома. При неудаче и заданном
+    // резервном адресе — пробуем его уже с обычным таймаутом клиента.
+    String effectiveHost = host;
     try {
-      await client.login();
+      final primary = RouterClient(host: host, user: user, pass: pass);
+      await primary.login().timeout(const Duration(seconds: 2));
     } on RouterAuthError {
       setState(() {
         _error = 'Неверный пароль или пользователь.';
         _checking = false;
       });
       return;
-    } on RouterUnreachableError {
-      setState(() {
-        _error = 'Нет связи с роутером по адресу $host. Проверьте Wi-Fi '
-            '(нужно быть подключённым к сети роутера) и адрес.';
-        _checking = false;
-      });
-      return;
-    } catch (e) {
-      setState(() {
-        _error = 'Не удалось подключиться: $e';
-        _checking = false;
-      });
-      return;
+    } catch (_) {
+      // Локальный адрес недоступен за 2 с (нет сети роутера, либо он
+      // просто медленный) — пробуем резервный, если он указан.
+      if (fallbackHost.isEmpty) {
+        setState(() {
+          _error =
+              'Нет связи с роутером по адресу $host. Проверьте Wi-Fi (нужно '
+              'быть подключённым к сети роутера) и адрес, либо укажите '
+              'резервный адрес через tailnet.';
+          _checking = false;
+        });
+        return;
+      }
+      try {
+        final fallback =
+            RouterClient(host: fallbackHost, user: user, pass: pass);
+        await fallback.login();
+        effectiveHost = fallbackHost;
+      } on RouterAuthError {
+        setState(() {
+          _error = 'Неверный пароль или пользователь.';
+          _checking = false;
+        });
+        return;
+      } on RouterUnreachableError {
+        setState(() {
+          _error = 'Нет связи ни по локальному адресу $host, ни по '
+              'резервному $fallbackHost. Проверьте tailnet-соединение '
+              'телефона и роутера.';
+          _checking = false;
+        });
+        return;
+      } catch (e) {
+        setState(() {
+          _error = 'Не удалось подключиться через резервный адрес: $e';
+          _checking = false;
+        });
+        return;
+      }
     }
-    await Credentials.save(host, user, pass);
+    await Credentials.save(effectiveHost, fallbackHost, user, pass);
     widget.onSaved();
   }
 }
@@ -909,6 +969,10 @@ String fmtAgeShort(int? unixTs) {
 /// Один RouterClient (и одна ubus-сессия) на все вкладки.
 class MainShell extends StatefulWidget {
   final String host;
+  // Резервный адрес (MagicDNS-имя или tailnet-IP роутера), используется
+  // клиентом только на экране настройки/переподключения — сама сессия
+  // MainShell не переключает адрес на лету (см. TODO в feat/remote-access).
+  final String fallbackHost;
   final String user;
   final String pass;
   final VoidCallback onLogout;
@@ -916,6 +980,7 @@ class MainShell extends StatefulWidget {
   const MainShell({
     super.key,
     required this.host,
+    this.fallbackHost = '',
     required this.user,
     required this.pass,
     required this.onLogout,
